@@ -5,3 +5,4 @@ authors = ["Robert Escriva <robert@rescrv.net>"]
 edition = "2018"
 
 [dependencies]
+rand = "0.6"

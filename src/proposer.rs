@@ -1,6 +1,8 @@
 use super::Ballot;
+use super::configuration::ReplicaID;
+use super::configuration::Configuration;
 use super::PValue;
-use super::ReplicaID;
+use super::PaxosPhase;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
@@ -18,43 +20,46 @@ pub trait Logger {
     fn error_pvalue_conflict(&mut self, p1: &PValue, p2: &PValue);
 }
 
-pub struct ProposerConstants<'a> {
-    // The Ballot which this proposer is shepherding forward.
-    ballot: Ballot,
-    // The acceptors this proposer is courting.
-    acceptors: &'a [ReplicaID],
-    // The range of slots this proposer is valid for.  [0, 1).
-    slots: (u64, u64),
-    // The number of proposals that may be issued concurrently.
-    alpha: u64,
-}
-
 pub struct Proposer<'a, L: Logger> {
-    // ProposerConstants that govern this particular proposer
-    constants: &'a ProposerConstants<'a>,
+    // The configuration under which this proposer operates.  Proposers will not operate under
+    // different configs; they will die and a new one will rise in their place.
+    config: &'a Configuration,
+    // The Ballot which this proposer is shepherding forward.
+    ballot: &'a Ballot,
     // The Logger to which state transitions and notable events will be logged.
     logger: &'a mut L,
+
     // Is this proposer a lame_duck now because another higher ballot is floating around?
     // Note that this proposer technically doesn't have to even acknowledge this and the protocol
-    // should still be safe because acceptors will ignore this proposer.
+    // should still be safe because that's the point of Paxos.
     is_lame_duck: bool,
+    // Phase of paxos in which this proposer believes itself to be.
+    phase: PaxosPhase,
     // Values to be proposed and pushed forward by this proposer.
     proposals: HashMap<u64, PValue>,
     // Acceptors that follow this proposer.
     followers: HashMap<&'a ReplicaID, FollowerState>,
+    // The lower and upper bounds of the range this proposer will push forward.
+    lower_slot: u64,
+    upper_slot: u64,
 }
 
 impl<'a, L: Logger> Proposer<'a, L> {
     pub fn new(
-        constants: &'a ProposerConstants,
+        config: &'a Configuration,
+        ballot: &'a Ballot,
         logger: &'a mut L,
     ) -> Proposer<'a, L> {
         Proposer {
-            constants,
+            config,
+            ballot,
             logger,
             is_lame_duck: false,
+            phase: PaxosPhase::ONE,
             proposals: HashMap::new(),
             followers: HashMap::new(),
+            lower_slot: config.first_valid_slot(),
+            upper_slot: u64::max_value(),
         }
     }
 
@@ -78,22 +83,23 @@ impl<'a, L: Logger> Proposer<'a, L> {
         current: &Ballot,
         pvalues: &[PValue],
     ) {
+        // Protection against misuse by owner
         if self.is_lame_duck {
             self.logger.error_in_lame_duck();
             return;
         }
         // Provide basic protection against misbehaving servers participating in the protocol.
-        if !self.is_acceptor(acceptor) {
+        if !self.config.is_member(acceptor) {
             self.logger.error_misbehaving_server("not an acceptor");
             return;
         }
         // Become a lame duck if this proposer has been superceded.
-        if self.constants.ballot < *current {
+        if self.ballot < current {
             self.logger.become_lame_duck(current);
             return;
         }
         // Drop this message if it is old and out of date.
-        if *current < self.constants.ballot {
+        if current < self.ballot {
             // TODO(rescrv):  this is a bad condition, but whether it's an error depends on if the
             // layer routing to the proposer is guaranteeing that old proposer's messages won't be
             // sent to new proposers
@@ -101,7 +107,7 @@ impl<'a, L: Logger> Proposer<'a, L> {
         }
         // Protect against future programmers.
         assert!(
-            *current == self.constants.ballot,
+            current == self.ballot,
             "we can only proceed if the ballots are equal"
         );
         // If already accepted, do not go through it again.
@@ -109,10 +115,10 @@ impl<'a, L: Logger> Proposer<'a, L> {
             // TODO(rescrv): might be useful to log this.
             return;
         }
-        let state = FollowerState::new(self.constants.slots.0);
+        let state = FollowerState::new(self.lower_slot);
         // Integrate the pvalues from the acceptor.
         for pval in pvalues {
-            if pval.slot < self.constants.slots.0 || self.constants.slots.1 <= pval.slot {
+            if pval.slot < self.lower_slot || self.upper_slot <= pval.slot {
                 // TODO(rescrv): warn if this happens because it is inefficient
                 continue;
             }
@@ -146,23 +152,7 @@ impl<'a, L: Logger> Proposer<'a, L> {
             }
         }
         // Record that the acceptor follows us.
-        self.followers.insert(self.get_acceptor(acceptor), state);
-    }
-
-    // Is the provided ReplicaID among the set of acceptors this proposer is courting?
-    fn is_acceptor(&self, acceptor: &ReplicaID) -> bool {
-        self.constants.acceptors.iter().any(|a| a == acceptor)
-    }
-
-    // Turn the reference to a ReplicaID into an equivalently-valued ReplicaID that outlasts the
-    // proposer's lifetime.
-    fn get_acceptor(&self, acceptor: &ReplicaID) -> &'a ReplicaID {
-        for i in 0..self.constants.acceptors.len() {
-            if self.constants.acceptors[i] == *acceptor {
-                return &self.constants.acceptors[i];
-            }
-        }
-        panic!("cannot call get_acceptor(A) when !is_acceptor(A)")
+        self.followers.insert(self.config.member_reference(acceptor), state);
     }
 }
 
@@ -179,18 +169,9 @@ impl FollowerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::*;
 
-    // TODO(rescrv): dedupe
-    pub const REPLICA1: ReplicaID = ReplicaID { XXX: 1 };
-    pub const REPLICA2: ReplicaID = ReplicaID { XXX: 2 };
-    pub const REPLICA3: ReplicaID = ReplicaID { XXX: 3 };
-    pub const REPLICA4: ReplicaID = ReplicaID { XXX: 4 };
-    pub const REPLICA5: ReplicaID = ReplicaID { XXX: 5 };
-
-    pub const THREE_REPLICAS: &[ReplicaID] = &[REPLICA1, REPLICA2, REPLICA3];
-    pub const FIVE_REPLICAS: &[ReplicaID] = &[REPLICA1, REPLICA2, REPLICA3, REPLICA4, REPLICA5];
-
-    #[derive(Eq,PartialEq)]
+    #[derive(Eq, PartialEq)]
     struct TestLogger {
         lame_duck_superceded_by: Option<Ballot>,
         saw_misbehaving_server_error: bool,
@@ -236,43 +217,47 @@ mod tests {
 
     #[test]
     fn three_replicas_phase_one_no_pvalues() {
-        let PC = ProposerConstants {
-            ballot : Ballot::new(5, &THREE_REPLICAS[0]),
-            acceptors : THREE_REPLICAS,
-            slots: (0, u64::max_value()),
-            alpha: 16,
-        };
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
+        let ballot = Ballot::new(1, &THREE_REPLICAS[0]);
         let mut logger = TestLogger::new();
-        let mut proposer = Proposer::new(&PC, &mut logger);
+        let mut proposer = Proposer::new(&config, &ballot, &mut logger);
 
-        proposer.process_phase_1b_message(&REPLICA1, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA1, &ballot, &[]);
         proposer.logger.assert_ok();
-        proposer.process_phase_1b_message(&REPLICA2, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
         proposer.logger.assert_ok();
-        proposer.process_phase_1b_message(&REPLICA3, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
         proposer.logger.assert_ok();
     }
 
     #[test]
     fn five_replicas_phase_one_no_pvalues() {
-        let PC = ProposerConstants {
-            ballot : Ballot::new(5, &FIVE_REPLICAS[0]),
-            acceptors : FIVE_REPLICAS,
-            slots: (0, u64::max_value()),
-            alpha: 16,
-        };
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let ballot = Ballot::new(5, &FIVE_REPLICAS[0]);
         let mut logger = TestLogger::new();
-        let mut proposer = Proposer::new(&PC, &mut logger);
+        let mut proposer = Proposer::new(&config, &ballot, &mut logger);
 
-        proposer.process_phase_1b_message(&REPLICA1, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA1, &ballot, &[]);
         proposer.logger.assert_ok();
-        proposer.process_phase_1b_message(&REPLICA2, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
         proposer.logger.assert_ok();
-        proposer.process_phase_1b_message(&REPLICA3, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
         proposer.logger.assert_ok();
-        proposer.process_phase_1b_message(&REPLICA4, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA4, &ballot, &[]);
         proposer.logger.assert_ok();
-        proposer.process_phase_1b_message(&REPLICA5, &PC.ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA5, &ballot, &[]);
         proposer.logger.assert_ok();
     }
+
+    // TODO(rescrv):
+    // - test proposer enters lame duck
+    // - test lame duck will error_in_lame_duck
+    // - test with an acceptor not part of the ensemble
+    // - test that stale phase 1b has zero effect
+    // - test an acceptor double-accepting
+    // - test slots outside the mandate of the proposer
+    // - test acceptors same pval
+    // - test acceptors different pvals with diff ballot same slot
+    // - test acceptors "same" pvals different commands
+    // - add helper to look at the followers
 }
