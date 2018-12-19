@@ -2,8 +2,8 @@ use std::fmt;
 use std::fmt::Write;
 
 use rand;
-use rand::Rng;
 use rand::rngs::EntropyRng;
+use rand::Rng;
 
 const ID_BYTES: usize = 16;
 const DEFAULT_ALPHA: u64 = 16;
@@ -88,7 +88,11 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    pub fn bootstrap(group: &GroupID, replicas: &[ReplicaID], shadows: &[ReplicaID]) -> Configuration {
+    pub fn bootstrap(
+        group: &GroupID,
+        replicas: &[ReplicaID],
+        shadows: &[ReplicaID],
+    ) -> Configuration {
         Configuration {
             group: group.clone(),
             version: 1,
@@ -180,13 +184,16 @@ pub mod testutil {
 
 #[cfg(test)]
 mod tests {
-    use crate::testutil::*;
     use super::*;
+    use crate::testutil::*;
 
     // Test that this constant does not change and document why.
     #[test]
     fn id_bytes_is_sixteen() {
-        assert_eq!(ID_BYTES, 16, "if you change the constant, fix this test and the *_string methods tests");
+        assert_eq!(
+            ID_BYTES, 16,
+            "if you change the constant, fix this test and the *_string methods tests"
+        );
     }
 
     // Test that id generation does not fail often.

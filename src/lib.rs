@@ -1,5 +1,6 @@
 pub mod configuration;
 pub mod proposer;
+pub mod simulator;
 
 use std::fmt;
 

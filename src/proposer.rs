@@ -1,6 +1,6 @@
-use super::Ballot;
-use super::configuration::ReplicaID;
 use super::configuration::Configuration;
+use super::configuration::ReplicaID;
+use super::Ballot;
 use super::PValue;
 use super::PaxosPhase;
 use std::collections::hash_map::Entry;
@@ -152,7 +152,8 @@ impl<'a, L: Logger> Proposer<'a, L> {
             }
         }
         // Record that the acceptor follows us.
-        self.followers.insert(self.config.member_reference(acceptor), state);
+        self.followers
+            .insert(self.config.member_reference(acceptor), state);
     }
 }
 
