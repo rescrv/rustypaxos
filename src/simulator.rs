@@ -1,122 +1,122 @@
-use rand;
-use rand::Rng;
-use rand::rngs::EntropyRng;
-
-#[derive(Eq, PartialEq)]
-pub struct DeterministicChooser {
-    hash: [u8; 32]
-}
-
-impl DeterministicChooser {
-    pub fn new() -> DeterministicChooser {
-        let mut x = DeterministicChooser{ hash: [0; 32] };
-        let mut r = EntropyRng::new();
-        r.try_fill(&mut x.hash);
-        return x;
-    }
-}
-
-#[derive(Eq, PartialEq)]
-pub enum Transition {
-    // Every good state machine under development has a NOP
-    NOP(),
-
-    // Create a new proposal in the system, issued by a client.
-    Propose(),
-    // Repropose a command already in the system.
-    Repropose(DeterministicChooser),
-    // Inform that a completed proposal succeeded so that the client stops proposing it.
-    ClientSuccess(DeterministicChooser),
-
-    // Tick the chosen process in the system.
-    Tick(DeterministicChooser),
-
-    // Start a proposer on a deterministically chosen replica.
-    StartProposer(DeterministicChooser),
-    // Step the processing of a deterministically chosen replica's proposer.
-    StepProposer(DeterministicChooser),
-}
-
-pub struct TransitionGenerator {}
-
-impl TransitionGenerator {
-    pub fn new() -> TransitionGenerator {
-        TransitionGenerator {}
-    }
-
-    pub fn next(&mut self) -> Transition {
-        let mut rng = rand::thread_rng();
-        loop {
-            let trans = match rng.gen_range(0, 7) {
-                0 => Transition::NOP(),
-                1 => Transition::Propose(),
-                2 => Transition::Repropose(DeterministicChooser::new()),
-                3 => Transition::ClientSuccess(DeterministicChooser::new()),
-                4 => Transition::Tick(DeterministicChooser::new()),
-                5 => Transition::StartProposer(DeterministicChooser::new()),
-                6 => Transition::StepProposer(DeterministicChooser::new()),
-
-                _ => Transition::NOP(),
-            };
-            if trans != Transition::NOP() {
-                return trans
-            }
-        }
-    }
-}
-
-pub struct Simulator {}
-
-impl Simulator {
-    pub fn new() -> Simulator {
-        Simulator {}
-    }
-
-    pub fn apply(&mut self, trans: &Transition) -> String {
-        match trans {
-            Transition::NOP() => self.apply_nop(),
-            Transition::Propose() => self.apply_propose(),
-            Transition::Repropose(C) => self.apply_repropose(C),
-            Transition::ClientSuccess(C) => self.apply_client_success(C),
-            Transition::Tick(C) => self.apply_tick(C),
-            Transition::StartProposer(C) => self.apply_start_proposer(C),
-            Transition::StepProposer(C) => self.apply_step_proposer(C),
-        }
-    }
-
-    fn apply_nop(&mut self) -> String {
-        String::from("NOP")
-    }
-
-    fn apply_propose(&mut self) -> String {
-        String::from("PROPOSE")
-    }
-
-    fn apply_repropose(&mut self, chooser: &DeterministicChooser) -> String {
-        String::from("RE-PROPOSE")
-    }
-
-    fn apply_client_success(&mut self, chooser: &DeterministicChooser) -> String {
-        String::from("CLIENT SUCCESS")
-    }
-
-    fn apply_tick(&mut self, chooser: &DeterministicChooser) -> String {
-        String::from("TICK")
-    }
-
-    fn apply_start_proposer(&mut self, chooser: &DeterministicChooser) -> String {
-        String::from("START PROPOSER")
-    }
-
-    fn apply_step_proposer(&mut self, chooser: &DeterministicChooser) -> String {
-        String::from("STEP PROPOSER")
-    }
-
-    pub fn checksum(&self) -> String {
-        String::from("checksum")
-    }
-}
-
+//use rand;
+//use rand::Rng;
+//use rand::rngs::EntropyRng;
+//
+//#[derive(Eq, PartialEq)]
+//pub struct DeterministicChooser {
+//    hash: [u8; 32]
+//}
+//
+//impl DeterministicChooser {
+//    pub fn new() -> DeterministicChooser {
+//        let mut x = DeterministicChooser{ hash: [0; 32] };
+//        let mut r = EntropyRng::new();
+//        r.try_fill(&mut x.hash);
+//        return x;
+//    }
+//}
+//
+//#[derive(Eq, PartialEq)]
+//pub enum Transition {
+//    // Every good state machine under development has a NOP
+//    NOP(),
+//
+//    // Create a new proposal in the system, issued by a client.
+//    Propose(),
+//    // Repropose a command already in the system.
+//    Repropose(DeterministicChooser),
+//    // Inform that a completed proposal succeeded so that the client stops proposing it.
+//    ClientSuccess(DeterministicChooser),
+//
+//    // Tick the chosen process in the system.
+//    Tick(DeterministicChooser),
+//
+//    // Start a proposer on a deterministically chosen replica.
+//    StartProposer(DeterministicChooser),
+//    // Step the processing of a deterministically chosen replica's proposer.
+//    StepProposer(DeterministicChooser),
+//}
+//
+//pub struct TransitionGenerator {}
+//
+//impl TransitionGenerator {
+//    pub fn new() -> TransitionGenerator {
+//        TransitionGenerator {}
+//    }
+//
+//    pub fn next(&mut self) -> Transition {
+//        let mut rng = rand::thread_rng();
+//        loop {
+//            let trans = match rng.gen_range(0, 7) {
+//                0 => Transition::NOP(),
+//                1 => Transition::Propose(),
+//                2 => Transition::Repropose(DeterministicChooser::new()),
+//                3 => Transition::ClientSuccess(DeterministicChooser::new()),
+//                4 => Transition::Tick(DeterministicChooser::new()),
+//                5 => Transition::StartProposer(DeterministicChooser::new()),
+//                6 => Transition::StepProposer(DeterministicChooser::new()),
+//
+//                _ => Transition::NOP(),
+//            };
+//            if trans != Transition::NOP() {
+//                return trans
+//            }
+//        }
+//    }
+//}
+//
+//pub struct Simulator {}
+//
+//impl Simulator {
+//    pub fn new() -> Simulator {
+//        Simulator {}
+//    }
+//
+//    pub fn apply(&mut self, trans: &Transition) -> String {
+//        match trans {
+//            Transition::NOP() => self.apply_nop(),
+//            Transition::Propose() => self.apply_propose(),
+//            Transition::Repropose(C) => self.apply_repropose(C),
+//            Transition::ClientSuccess(C) => self.apply_client_success(C),
+//            Transition::Tick(C) => self.apply_tick(C),
+//            Transition::StartProposer(C) => self.apply_start_proposer(C),
+//            Transition::StepProposer(C) => self.apply_step_proposer(C),
+//        }
+//    }
+//
+//    fn apply_nop(&mut self) -> String {
+//        String::from("NOP")
+//    }
+//
+//    fn apply_propose(&mut self) -> String {
+//        String::from("PROPOSE")
+//    }
+//
+//    fn apply_repropose(&mut self, chooser: &DeterministicChooser) -> String {
+//        String::from("RE-PROPOSE")
+//    }
+//
+//    fn apply_client_success(&mut self, chooser: &DeterministicChooser) -> String {
+//        String::from("CLIENT SUCCESS")
+//    }
+//
+//    fn apply_tick(&mut self, chooser: &DeterministicChooser) -> String {
+//        String::from("TICK")
+//    }
+//
+//    fn apply_start_proposer(&mut self, chooser: &DeterministicChooser) -> String {
+//        String::from("START PROPOSER")
+//    }
+//
+//    fn apply_step_proposer(&mut self, chooser: &DeterministicChooser) -> String {
+//        String::from("STEP PROPOSER")
+//    }
+//
+//    pub fn checksum(&self) -> String {
+//        String::from("checksum")
+//    }
+//}
+//
 //type Simulator struct {
 //	index      uint64
 //	checksum   []byte
@@ -250,4 +250,4 @@ impl Simulator {
 //	}
 //	return nil
 //}
-//*/
+//

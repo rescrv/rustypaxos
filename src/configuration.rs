@@ -34,12 +34,20 @@ fn encode_id(id: &[u8; ID_BYTES]) -> String {
 }
 
 // GroupID uniquely identifies a Paxos ensemble.
-#[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Hash)]
 pub struct GroupID {
     id: [u8; ID_BYTES],
 }
 
 impl GroupID {
+    pub fn generate() -> Result<GroupID, rand::Error> {
+        let id = gen_id();
+        match id {
+            Ok(id) => Ok(GroupID { id }),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn viewable_id(&self) -> String {
         encode_id(&self.id)
     }
@@ -52,12 +60,20 @@ impl fmt::Display for GroupID {
 }
 
 // ReplicaID represents a single replica in the Paxos ensemble.
-#[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Hash)]
 pub struct ReplicaID {
     id: [u8; ID_BYTES],
 }
 
 impl ReplicaID {
+    pub fn generate() -> Result<ReplicaID, rand::Error> {
+        let id = gen_id();
+        match id {
+            Ok(id) => Ok(ReplicaID { id }),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn viewable_id(&self) -> String {
         encode_id(&self.id)
     }
@@ -132,6 +148,28 @@ impl Configuration {
         }
         panic!("cannot call get_acceptor(A) when !is_acceptor(A)")
     }
+
+    pub fn members(&self) -> impl Iterator<Item = &ReplicaID> {
+        self.replicas().chain(self.shadows())
+    }
+
+    pub fn replicas(&self) -> impl Iterator<Item = &ReplicaID> {
+        self.replicas.iter()
+    }
+
+    pub fn shadows(&self) -> impl Iterator<Item = &ReplicaID> {
+        self.shadows.iter()
+    }
+
+    pub fn is_quorum(&self, f: &Fn(&ReplicaID) -> bool) -> bool {
+        let mut count = 0;
+        for r in self.replicas() {
+            if f(r) {
+                count += 1;
+            }
+        }
+        self.replicas.len() / 2 + 1 <= count
+    }
 }
 
 #[cfg(test)]
@@ -184,8 +222,8 @@ pub mod testutil {
 
 #[cfg(test)]
 mod tests {
+    use super::testutil::*;
     use super::*;
-    use crate::testutil::*;
 
     // Test that this constant does not change and document why.
     #[test]
@@ -251,5 +289,122 @@ mod tests {
         assert!(!config.is_shadow(&REPLICA3));
         assert!(config.is_shadow(&REPLICA4));
         assert!(config.is_shadow(&REPLICA5));
+    }
+
+    // Test that membership iteration works
+    #[test]
+    fn iter_members() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let mut iter = config.members();
+        assert_eq!(iter.next(), Some(&REPLICA1));
+        assert_eq!(iter.next(), Some(&REPLICA2));
+        assert_eq!(iter.next(), Some(&REPLICA3));
+        assert_eq!(iter.next(), Some(&REPLICA4));
+        assert_eq!(iter.next(), Some(&REPLICA5));
+        assert_eq!(iter.next(), None);
+    }
+
+    // Test that replica iteration works
+    #[test]
+    fn iter_replicas() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let mut iter = config.replicas();
+        assert_eq!(iter.next(), Some(&REPLICA1));
+        assert_eq!(iter.next(), Some(&REPLICA2));
+        assert_eq!(iter.next(), Some(&REPLICA3));
+        assert_eq!(iter.next(), None);
+    }
+
+    // Test that shadow iteration works
+    #[test]
+    fn iter_shadows() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let mut iter = config.shadows();
+        assert_eq!(iter.next(), Some(&REPLICA4));
+        assert_eq!(iter.next(), Some(&REPLICA5));
+        assert_eq!(iter.next(), None);
+    }
+
+    // Test that quorum computation works and excludes shadows
+    #[test]
+    fn quorum_computation_three_replicas() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        // all nodes form a quorum
+        assert!(config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => true,
+                &REPLICA2 => true,
+                &REPLICA3 => true,
+                _ => false,
+            }
+        }));
+        // two out of three is still quorum
+        assert!(config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => true,
+                &REPLICA2 => true,
+                &REPLICA3 => false,
+                _ => false,
+            }
+        }));
+        // one out of three is not quorum
+        assert!(!config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => true,
+                &REPLICA2 => false,
+                &REPLICA3 => false,
+                _ => false,
+            }
+        }));
+        // adding a shadow should not change things
+        assert!(!config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => true,
+                &REPLICA2 => false,
+                &REPLICA3 => false,
+                &REPLICA4 => true,
+                &REPLICA5 => true,
+                _ => false,
+            }
+        }));
+    }
+
+    // Test quorums with five nodes
+    #[test]
+    fn quorum_computation_five_replicas() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        // all nodes form a quorum
+        assert!(config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => true,
+                &REPLICA2 => true,
+                &REPLICA3 => true,
+                &REPLICA4 => true,
+                &REPLICA5 => true,
+                _ => false,
+            }
+        }));
+        // three nodes form a quorum
+        assert!(config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => false,
+                &REPLICA2 => true,
+                &REPLICA3 => false,
+                &REPLICA4 => true,
+                &REPLICA5 => true,
+                _ => false,
+            }
+        }));
+        // two nodes do not a quorum make
+        assert!(!config.is_quorum(&|r| -> bool {
+            match r {
+                &REPLICA1 => false,
+                &REPLICA2 => true,
+                &REPLICA3 => false,
+                &REPLICA4 => true,
+                &REPLICA5 => false,
+                _ => false,
+            }
+        }));
     }
 }

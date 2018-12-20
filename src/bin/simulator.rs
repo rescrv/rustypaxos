@@ -1,8 +1,5 @@
-use std::process::exit;
-
-use rustypaxos::simulator::*;
-
 fn main() {
+    /*
     let mut gen = TransitionGenerator::new();
     let mut sim1 = Simulator::new();
     let mut sim2 = Simulator::new();
@@ -20,4 +17,5 @@ fn main() {
         print!("{}\n", res1);
     }
     exit(0);
+    */
 }

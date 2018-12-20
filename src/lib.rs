@@ -6,13 +6,14 @@ use std::fmt;
 
 use crate::configuration::ReplicaID;
 
+#[derive(Debug, Eq, PartialEq)]
 pub enum PaxosPhase {
     ONE,
     TWO,
 }
 
 // A Ballot matches the Paxos terminology and consists of an ordered pair of (number,leader).
-#[derive(Eq, PartialEq, PartialOrd, Ord, Clone)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
 pub struct Ballot {
     number: u64,
     leader: ReplicaID,
@@ -34,12 +35,22 @@ impl fmt::Display for Ballot {
 }
 
 // A PValue is referred to as a decree in the part time parliament paper.
-#[derive(Eq, PartialEq, PartialOrd, Ord, Clone)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
 pub struct PValue {
     slot: u64,
     ballot: Ballot,
-    // TODO(rescrv): type this
+    // TODO(rescrv): type this differently
     command: String,
+}
+
+impl PValue {
+    pub fn new(slot: u64, ballot: Ballot, command: String) -> PValue {
+        PValue {
+            slot,
+            ballot,
+            command,
+        }
+    }
 }
 
 // XXX type Command string
@@ -84,24 +95,6 @@ pub struct PValue {
 //	}
 //	p.ticker.Configure(p.config.ReplicaIndex(id))
 //	return p
-//}
-//
-//func (p *Paxos) EnableLog() {
-//	p.log = true
-//}
-//
-//func (p *Paxos) DisableLog() {
-//	p.log = false
-//}
-//
-//func (p *Paxos) Logf(format string, v ...interface{}) {
-//	if !p.log {
-//		return
-//	}
-//	args := make([]interface{}, len(v)+1)
-//	args[0] = p.thisServer
-//	copy(args[1:], v)
-//	log.Printf("replica %s: "+format, args...)
 //}
 //
 //func (p *Paxos) Tick() {
@@ -217,29 +210,27 @@ pub struct PValue {
 
 #[cfg(test)]
 mod testutil {
-    use crate::configuration::GroupID;
-    use crate::configuration::ReplicaID;
+    use super::Ballot;
 
     pub use crate::configuration::testutil::*;
 
-    pub const THREE_REPLICAS: &[ReplicaID] = &[REPLICA1, REPLICA2, REPLICA3];
-    pub const FIVE_REPLICAS: &[ReplicaID] = &[REPLICA1, REPLICA2, REPLICA3, REPLICA4, REPLICA5];
+    pub fn ballot_4_replica1() -> Ballot { Ballot::new(4, &REPLICA1) }
+    pub fn ballot_5_replica1() -> Ballot { Ballot::new(5, &REPLICA1) }
+    pub fn ballot_6_replica1() -> Ballot { Ballot::new(6, &REPLICA1) }
+    pub fn ballot_7_replica1() -> Ballot { Ballot::new(7, &REPLICA1) }
+
+    pub fn ballot_6_replica2() -> Ballot { Ballot::new(6, &REPLICA2) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::testutil::*;
-    use super::*;
 
     // Test that the Ballot string looks like what we expect.
     #[test]
     fn ballot_string() {
-        const B: Ballot = Ballot {
-            number: 5,
-            leader: REPLICA1,
-        };
         assert_eq!(
-            B.to_string(),
+            ballot_5_replica1().to_string(),
             "ballot:5:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         );
     }
@@ -247,25 +238,9 @@ mod tests {
     // Test that ballots are ordered first by their number and then by their leader.
     #[test]
     fn ballot_order() {
-        let b1 = Ballot {
-            number: 5,
-            leader: REPLICA1,
-        };
-        let b2 = Ballot {
-            number: 6,
-            leader: REPLICA1,
-        };
-        let b3 = Ballot {
-            number: 6,
-            leader: REPLICA2,
-        };
-        let b4 = Ballot {
-            number: 7,
-            leader: REPLICA1,
-        };
-        assert!(b1 < b2);
-        assert!(b2 < b3);
-        assert!(b3 < b4);
+        assert!(ballot_5_replica1() < ballot_6_replica1());
+        assert!(ballot_6_replica1() < ballot_6_replica2());
+        assert!(ballot_6_replica2() < ballot_7_replica1());
     }
 
     // Test that ballots are ordered first by their number and then by their leader.
