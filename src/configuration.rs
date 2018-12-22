@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fmt::Write;
+use std::collections::HashMap;
 
 use rand;
 use rand::rngs::EntropyRng;
@@ -184,7 +185,7 @@ impl Configuration {
         self.shadows.iter()
     }
 
-    pub fn is_quorum(&self, f: &Fn(&ReplicaID) -> bool) -> bool {
+    pub fn has_quorum(&self, f: &Fn(&ReplicaID) -> bool) -> bool {
         let mut count = 0;
         for r in self.replicas() {
             if f(r) {
@@ -219,6 +220,58 @@ impl Reconfiguration {
         assert!(0 < alpha && alpha <= MAXIMUM_ALPHA);
         self.config.alpha = alpha;
         self
+    }
+}
+
+// Track a quorum of the Paxos ensemble.
+pub struct QuorumTracker<'a, S> {
+    config: &'a Configuration,
+    followers: HashMap<&'a ReplicaID, S>,
+}
+
+impl<'a, S> QuorumTracker<'a, S> {
+    pub fn new(config: &'a Configuration) -> QuorumTracker<'a, S> {
+        QuorumTracker {
+            config,
+            followers: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, member: &ReplicaID, state: S) {
+        if !self.is_follower(member) {
+            self.followers.insert(self.config.member_reference(member), state);
+        }
+    }
+
+    pub fn is_follower(&self, member: &ReplicaID) -> bool {
+        self.followers.contains_key(member)
+    }
+
+    pub fn waiting_for(&self) -> Vec<&'a ReplicaID> {
+        let mut nf = Vec::new();
+        for replica in self.config.replicas() {
+            if !self.is_follower(replica) {
+                nf.push(replica);
+            }
+        }
+        for shadow in self.config.shadows() {
+            if !self.is_follower(shadow) {
+                nf.push(shadow);
+            }
+        }
+        nf
+    }
+
+    pub fn follower_state(&self, member: &ReplicaID) -> Option<&S> {
+        self.followers.get(member)
+    }
+
+    pub fn follower_state_mut(&mut self, member: &ReplicaID) -> Option<&mut S> {
+        self.followers.get_mut(member)
+    }
+
+    pub fn has_quorum(&self) -> bool {
+        self.config.has_quorum(&|x| self.followers.contains_key(x))
     }
 }
 
@@ -387,7 +440,7 @@ mod tests {
     fn quorum_computation_three_replicas() {
         let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         // all nodes form a quorum
-        assert!(config.is_quorum(&|r| -> bool {
+        assert!(config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => true,
                 &REPLICA2 => true,
@@ -396,7 +449,7 @@ mod tests {
             }
         }));
         // two out of three is still quorum
-        assert!(config.is_quorum(&|r| -> bool {
+        assert!(config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => true,
                 &REPLICA2 => true,
@@ -405,7 +458,7 @@ mod tests {
             }
         }));
         // one out of three is not quorum
-        assert!(!config.is_quorum(&|r| -> bool {
+        assert!(!config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => true,
                 &REPLICA2 => false,
@@ -414,7 +467,7 @@ mod tests {
             }
         }));
         // adding a shadow should not change things
-        assert!(!config.is_quorum(&|r| -> bool {
+        assert!(!config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => true,
                 &REPLICA2 => false,
@@ -431,7 +484,7 @@ mod tests {
     fn quorum_computation_five_replicas() {
         let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
         // all nodes form a quorum
-        assert!(config.is_quorum(&|r| -> bool {
+        assert!(config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => true,
                 &REPLICA2 => true,
@@ -442,7 +495,7 @@ mod tests {
             }
         }));
         // three nodes form a quorum
-        assert!(config.is_quorum(&|r| -> bool {
+        assert!(config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => false,
                 &REPLICA2 => true,
@@ -453,7 +506,7 @@ mod tests {
             }
         }));
         // two nodes do not a quorum make
-        assert!(!config.is_quorum(&|r| -> bool {
+        assert!(!config.has_quorum(&|r| -> bool {
             match r {
                 &REPLICA1 => false,
                 &REPLICA2 => true,
@@ -463,6 +516,49 @@ mod tests {
                 _ => false,
             }
         }));
+    }
+
+    // Test that quorum object works and excludes shadows
+    #[test]
+    fn quorum_object_three_replicas() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let mut quorum: QuorumTracker<()> = QuorumTracker::new(&config);
+
+        // None is not a quorum.
+        assert!(!quorum.has_quorum());
+        // One is not a quorum.
+        quorum.add(&REPLICA2, ());
+        assert!(!quorum.has_quorum());
+        // One plus shadows is not a quorum.
+        quorum.add(&REPLICA4, ());
+        quorum.add(&REPLICA5, ());
+        assert!(!quorum.has_quorum());
+        // Two becomes a quorum.
+        quorum.add(&REPLICA1, ());
+        assert!(quorum.has_quorum());
+        // Three remains a quorum.
+        quorum.add(&REPLICA3, ());
+        assert!(quorum.has_quorum());
+    }
+
+    // Test quorum objects with five nodes
+    #[test]
+    fn quorum_object_five_replicas() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let mut quorum: QuorumTracker<()> = QuorumTracker::new(&config);
+
+        // Two is not a quorum.
+        quorum.add(&REPLICA2, ());
+        quorum.add(&REPLICA4, ());
+        assert!(!quorum.has_quorum());
+        // Three is a quorum.
+        quorum.add(&REPLICA3, ());
+        assert!(quorum.has_quorum());
+        // Four and five are also quorums
+        quorum.add(&REPLICA1, ());
+        assert!(quorum.has_quorum());
+        quorum.add(&REPLICA5, ());
+        assert!(quorum.has_quorum());
     }
 
     // Test reconfigure increments epoch

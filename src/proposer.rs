@@ -1,4 +1,5 @@
 use super::configuration::Configuration;
+use super::configuration::QuorumTracker;
 use super::configuration::ReplicaID;
 use super::Ballot;
 use super::PValue;
@@ -46,7 +47,7 @@ pub struct Proposer<'a, L: Logger, M: Messenger> {
     // Phase of paxos in which this proposer believes itself to be.
     phase: PaxosPhase,
     // Acceptors that follow this proposer.
-    followers: HashMap<&'a ReplicaID, FollowerState>,
+    followers: QuorumTracker<'a, FollowerState>,
     // Values to be proposed and pushed forward by this proposer.
     proposals: HashMap<u64, PValueState>,
     // The lower and upper bounds of the range this proposer will push forward.
@@ -71,7 +72,7 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             messenger,
             is_lame_duck: false,
             phase: PaxosPhase::ONE,
-            followers: HashMap::new(),
+            followers: QuorumTracker::new(config),
             proposals: HashMap::new(),
             lower_slot: config.first_valid_slot(),
             upper_slot: u64::max_value(),
@@ -122,18 +123,11 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             self.logger.error_in_lame_duck();
             return;
         }
-        // Send a phase one message to each replica
-        for replica in self.config.replicas() {
-            if !self.followers.contains_key(replica) {
-                self.send_phase_1a_message(replica);
-            }
+        // Send phase one messages to replicas we haven't had join our quorum.
+        for non_follower in self.followers.waiting_for() {
+            self.send_phase_1a_message(non_follower);
         }
-        // Send a phase one message to each shadow
-        for shadow in self.config.shadows() {
-            if !self.followers.contains_key(shadow) {
-                self.send_phase_1a_message(shadow);
-            }
-        }
+        // If in phase two, do the work for phase two.
         if self.phase == PaxosPhase::TWO {
             self.make_progress_phase_two();
         }
@@ -173,7 +167,7 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             "we can only proceed if the ballots are equal"
         );
         // If already accepted, do not go through it again.
-        if self.followers.contains_key(acceptor) {
+        if self.followers.is_follower(acceptor) {
             // TODO(rescrv): might be useful to log this.
             return;
         }
@@ -226,12 +220,11 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             }
         }
         // Record that the acceptor follows us.
-        self.followers
-            .insert(self.config.member_reference(acceptor), state);
+        self.followers.add(acceptor, state);
         // If we are in phase one
         if self.phase == PaxosPhase::ONE {
             // maybe advance to phase two
-            if self.config.is_quorum(&|x| self.followers.contains_key(x)) {
+            if self.followers.has_quorum() {
                 self.phase = PaxosPhase::TWO;
                 self.bind_commands_to_slots();
                 self.make_progress_phase_two();
@@ -260,6 +253,8 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
 
     fn bind_commands_to_slots(&mut self) {
         // TODO(rescrv):  I know this is inefficient, but it is safe and clean.  Make it all three.
+        // The risk of being tricky here is that there's a hole in the pvalues from phase one, and
+        // that hole leads to slots not being filled and the window not moving forward.
         let mut slot = self.lower_slot;
         while slot < self.upper_slot && slot < self.lower_slot + self.config.alpha() {
             let entry = self.proposals.entry(slot);
@@ -392,16 +387,19 @@ mod tests {
         // One
         proposer.process_phase_1b_message(&REPLICA1, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(!proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Two makes quorum
         proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         // Three is a bonus
         proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
     }
 
@@ -417,26 +415,31 @@ mod tests {
         // One
         proposer.process_phase_1b_message(&REPLICA1, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(!proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Two
         proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(!proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Three makes quorum
         proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         // Four is a bonus
         proposer.process_phase_1b_message(&REPLICA4, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         // Five is perfect
         proposer.process_phase_1b_message(&REPLICA5, &ballot, &[]);
         proposer.logger.assert_ok();
+        assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
     }
 
@@ -676,7 +679,7 @@ mod tests {
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
         assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1a.clone())));
-        assert!(match proposer.followers.get(&REPLICA3) {
+        assert!(match proposer.followers.follower_state(&REPLICA3) {
             Some(r) => r.start_slot == 2,
             None => false,
         });
@@ -754,6 +757,32 @@ mod tests {
         assert_eq!(proposer.proposals.len(), 0);
     }
 
+    // Test that advance window panics if it decreases.
+    #[test]
+    #[should_panic]
+    fn advance_window_monotonic() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
+        let ballot = ballot_5_replica1();
+        let mut logger = TestLogger::new();
+        let mut messenger = TestMessenger::new();
+        let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
+        proposer.advance_window(5);
+        proposer.advance_window(4);
+    }
+
+    // Test that stop_at_slot panics if it increases.
+    #[test]
+    #[should_panic]
+    fn stop_at_slot_monotonic() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
+        let ballot = ballot_5_replica1();
+        let mut logger = TestLogger::new();
+        let mut messenger = TestMessenger::new();
+        let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
+        proposer.stop_at_slot(4);
+        proposer.stop_at_slot(5);
+    }
+
     // Test the sliding window for enqueued commands.
     #[test]
     fn sliding_window_over_commands() {
@@ -822,9 +851,41 @@ mod tests {
         assert_eq!(proposer.proposals.len(), 7);
     }
 
+    // Test the sliding window stops enqueuing at the stop slot.
+    #[test]
+    fn sliding_window_stop_at_slot() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
+        let ballot = ballot_5_replica1();
+        let mut logger = TestLogger::new();
+        let mut messenger = TestMessenger::new();
+        let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
+
+        proposer.process_phase_1b_message(&REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
+        proposer.logger.assert_ok();
+        assert_eq!(proposer.phase, PaxosPhase::TWO);
+
+        // If this fails, adjust ITERS downward or DEFAULT_ALPHA upward.
+        const ITERS: u64 = 10;
+        assert!(ITERS < DEFAULT_ALPHA);
+
+        proposer.stop_at_slot(ITERS + 1);
+
+        for i in 0u64..ITERS {
+            proposer.enqueue_command(Command{command: String::from("command")});
+            assert_eq!(proposer.proposals.len() as u64, i + 1);
+            assert_eq!(proposer.commands.len() as u64, 0);
+        }
+
+        for i in 0u64..ITERS {
+            proposer.enqueue_command(Command{command: String::from("command")});
+            assert_eq!(proposer.proposals.len() as u64, ITERS);
+            assert_eq!(proposer.commands.len() as u64, i + 1);
+        }
+    }
+
     // TODO(rescrv):
     // - clean up redundancy
-    // - enqueue prior to phase two
-    // - advance window aborts if backwards
-    // - stop_at_slot
+    // - make progress phase two sends messages
 }
