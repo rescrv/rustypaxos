@@ -8,6 +8,7 @@ use super::PaxosPhase;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::ops::Range;
 
 pub trait Logger {
     // transitioning to lame duck
@@ -27,6 +28,7 @@ pub trait Logger {
 
 pub trait Messenger {
     fn send_phase_1a_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot);
+    fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue);
 }
 
 pub struct Proposer<'a, L: Logger, M: Messenger> {
@@ -49,7 +51,7 @@ pub struct Proposer<'a, L: Logger, M: Messenger> {
     // Acceptors that follow this proposer.
     followers: QuorumTracker<'a, FollowerState>,
     // Values to be proposed and pushed forward by this proposer.
-    proposals: HashMap<u64, PValueState>,
+    proposals: HashMap<u64, PValueState<'a>>,
     // The lower and upper bounds of the range this proposer will push forward.
     lower_slot: u64,
     upper_slot: u64,
@@ -116,6 +118,15 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
         self.bind_commands_to_slots();
     }
 
+    // Slots for which this proposer will currently generate pvalues
+    pub fn active_slots(&self) -> Range<u64> {
+        assert!(self.lower_slot <= self.upper_slot);
+        let lower = self.lower_slot;
+        let alpha = self.lower_slot + self.config.alpha();
+        let upper = if self.upper_slot < alpha { self.upper_slot } else { alpha };
+        lower..upper
+    }
+
     // Take actions that would make progress on this ballot in all phases.
     pub fn make_progress(&mut self) {
         // Protection against misuse by owner
@@ -124,8 +135,8 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             return;
         }
         // Send phase one messages to replicas we haven't had join our quorum.
-        for non_follower in self.followers.waiting_for() {
-            self.send_phase_1a_message(non_follower);
+        for replica in self.followers.waiting_for() {
+            self.send_phase_1a_message(replica);
         }
         // If in phase two, do the work for phase two.
         if self.phase == PaxosPhase::TWO {
@@ -209,13 +220,13 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
                         {
                             self.logger.error_pvalue_conflict(&entry.get().pval, pval);
                         }
-                        *entry.get_mut() = PValueState::wrap(pval.clone());
+                        *entry.get_mut() = PValueState::wrap(self.config, pval.clone());
                     }
                 }
                 // If there is nothing for this slot yet, the protocol obligates us to use this
                 // provided pvalue.
                 Entry::Vacant(entry) => {
-                    entry.insert(PValueState::wrap(pval.clone()));
+                    entry.insert(PValueState::wrap(self.config, pval.clone()));
                 }
             }
         }
@@ -244,32 +255,52 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
     // Take actions that will make progress for phase two of this ballot.
     fn make_progress_phase_two(&mut self) {
         assert!(self.phase == PaxosPhase::TWO);
-        // TODO(rescrv)
+        for slot in self.active_slots() {
+            let pval_state = match self.proposals.get_mut(&slot) {
+                Some(v) => v,
+                None => continue,
+            };
+            // TODO(rescrv):  Figure out how to not clone here.
+            let pval = &pval_state.pval.clone();
+            for replica in pval_state.quorum.waiting_for() {
+                self.send_phase_2a_message(replica, pval);
+            }
+        }
     }
 
     fn send_phase_1a_message(&mut self, acceptor: &ReplicaID) {
         self.messenger.send_phase_1a_message(acceptor, self.ballot);
     }
 
+    fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue) {
+        self.messenger.send_phase_2a_message(acceptor, pval);
+    }
+
     fn bind_commands_to_slots(&mut self) {
         // TODO(rescrv):  I know this is inefficient, but it is safe and clean.  Make it all three.
         // The risk of being tricky here is that there's a hole in the pvalues from phase one, and
         // that hole leads to slots not being filled and the window not moving forward.
-        let mut slot = self.lower_slot;
-        while slot < self.upper_slot && slot < self.lower_slot + self.config.alpha() {
+        for slot in self.active_slots() {
             let entry = self.proposals.entry(slot);
             if let Entry::Vacant(entry) = entry {
                 let command = match self.commands.pop_front() {
                     Some(cmd) => cmd,
                     None => return,
                 };
-                entry.insert(PValueState::wrap(PValue {
+                entry.insert(PValueState::wrap(self.config, PValue {
                     slot,
                     ballot: self.ballot.clone(),
                     command,
                 }));
             }
-            slot += 1;
+        }
+    }
+
+    #[cfg(test)]
+    fn peek_slot(&self, slot: u64) -> Option<&PValue> {
+        match self.proposals.get(&slot) {
+            Some(p) => Some(&p.pval),
+            None => None,
         }
     }
 }
@@ -285,15 +316,17 @@ impl FollowerState {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
-struct PValueState {
+#[derive(Debug)]
+struct PValueState<'a> {
     pval: PValue,
+    quorum: QuorumTracker<'a, ()>,
 }
 
-impl PValueState {
-    fn wrap(pval: PValue) -> PValueState {
+impl<'a> PValueState<'a> {
+    fn wrap(config: &'a Configuration, pval: PValue) -> PValueState<'a> {
         PValueState {
-            pval
+            pval,
+            quorum: QuorumTracker::new(config),
         }
     }
 }
@@ -336,12 +369,14 @@ mod tests {
 
     struct TestMessenger {
         phase_1a_messages: Vec<(ReplicaID, Ballot)>,
+        phase_2a_messages: Vec<(ReplicaID, PValue)>,
     }
 
     impl TestMessenger {
         fn new() -> TestMessenger {
             TestMessenger {
                 phase_1a_messages: Vec::new(),
+                phase_2a_messages: Vec::new(),
             }
         }
     }
@@ -350,6 +385,11 @@ mod tests {
         fn send_phase_1a_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot) {
             self.phase_1a_messages
                 .push((acceptor.clone(), ballot.clone()));
+        }
+
+        fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue) {
+            self.phase_2a_messages
+                .push((acceptor.clone(), pval.clone()));
         }
     }
 
@@ -578,16 +618,16 @@ mod tests {
         proposer.logger.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
         assert_eq!(proposer.proposals.len(), 2);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1.clone())));
-        assert_eq!(proposer.proposals.get(&2), Some(&PValueState::wrap(pval2.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1));
+        assert_eq!(proposer.peek_slot(2), Some(&pval2));
 
         proposer.process_phase_1b_message(&REPLICA2, &ballot, &[pval2.clone(), pval3.clone()]);
         proposer.logger.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 3);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1.clone())));
-        assert_eq!(proposer.proposals.get(&2), Some(&PValueState::wrap(pval2.clone())));
-        assert_eq!(proposer.proposals.get(&3), Some(&PValueState::wrap(pval3.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1));
+        assert_eq!(proposer.peek_slot(2), Some(&pval2));
+        assert_eq!(proposer.peek_slot(3), Some(&pval3));
     }
 
     // Test that the highest pvalue for the same slot gets retained.
@@ -613,9 +653,9 @@ mod tests {
         proposer.logger.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
         assert_eq!(proposer.proposals.len(), 3);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1.clone())));
-        assert_eq!(proposer.proposals.get(&2), Some(&PValueState::wrap(pval2a.clone())));
-        assert_eq!(proposer.proposals.get(&3), Some(&PValueState::wrap(pval3b.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1));
+        assert_eq!(proposer.peek_slot(2), Some(&pval2a));
+        assert_eq!(proposer.peek_slot(3), Some(&pval3b));
 
         proposer.process_phase_1b_message(
             &REPLICA2,
@@ -625,9 +665,9 @@ mod tests {
         proposer.logger.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 3);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1.clone())));
-        assert_eq!(proposer.proposals.get(&2), Some(&PValueState::wrap(pval2b.clone())));
-        assert_eq!(proposer.proposals.get(&3), Some(&PValueState::wrap(pval3b.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1));
+        assert_eq!(proposer.peek_slot(2), Some(&pval2b));
+        assert_eq!(proposer.peek_slot(3), Some(&pval3b));
     }
 
     // Test that pvalues with same ballot/slot, but different command will be logged.
@@ -646,12 +686,12 @@ mod tests {
         proposer.logger.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
         assert_eq!(proposer.proposals.len(), 1);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1a.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1a));
 
         proposer.process_phase_1b_message(&REPLICA2, &ballot, &[pval1b.clone()]);
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1b.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1b));
         assert!(proposer.logger.saw_pvalue_conflict_error);
     }
 
@@ -673,12 +713,12 @@ mod tests {
         proposer.logger.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1a.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1a));
 
         proposer.process_phase_1b_message(&REPLICA3, &ballot, &[pval1b.clone()]);
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
-        assert_eq!(proposer.proposals.get(&1), Some(&PValueState::wrap(pval1a.clone())));
+        assert_eq!(proposer.peek_slot(1), Some(&pval1a));
         assert!(match proposer.followers.follower_state(&REPLICA3) {
             Some(r) => r.start_slot == 2,
             None => false,
@@ -809,6 +849,7 @@ mod tests {
                 assert!(!proposer.proposals.contains_key(&(i + 1)));
                 assert_eq!(proposer.commands.len() as u64, i - DEFAULT_ALPHA + 1);
             }
+            assert_eq!(proposer.active_slots(), 1u64..(DEFAULT_ALPHA + 1));
         }
 
         proposer.advance_window(2);
@@ -816,16 +857,19 @@ mod tests {
         assert!(!proposer.proposals.contains_key(&1));
         assert!(proposer.proposals.contains_key(&(DEFAULT_ALPHA + 1)));
         assert!(!proposer.proposals.contains_key(&(DEFAULT_ALPHA + 2)));
+        assert_eq!(proposer.active_slots(), 2u64..(DEFAULT_ALPHA + 2));
 
         proposer.advance_window(7);
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA - 1);
         assert!(!proposer.proposals.contains_key(&6));
         assert!(proposer.commands.len() == 0);
+        assert_eq!(proposer.active_slots(), 7u64..(DEFAULT_ALPHA + 7));
 
         proposer.enqueue_command(Command{command: String::from("command")});
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA);
         assert!(proposer.proposals.contains_key(&(DEFAULT_ALPHA + 6)));
         assert!(proposer.commands.len() == 0);
+        assert_eq!(proposer.active_slots(), 7u64..(DEFAULT_ALPHA + 7));
     }
 
     // Test that commands get enqueued on transition to phase two.
@@ -885,7 +929,53 @@ mod tests {
         }
     }
 
-    // TODO(rescrv):
-    // - clean up redundancy
-    // - make progress phase two sends messages
+    // Test that phase two sends messages with pvalues.
+    #[test]
+    fn make_progress_sends_phase_two() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
+        let ballot = ballot_5_replica1();
+        let mut logger = TestLogger::new();
+        let mut messenger = TestMessenger::new();
+        let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
+
+        proposer.process_phase_1b_message(&REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
+        proposer.logger.assert_ok();
+        assert_eq!(proposer.phase, PaxosPhase::TWO);
+
+        let cmd1 = String::from("command 1");
+        let cmd2 = String::from("command 2");
+        proposer.enqueue_command(Command{command: cmd1.clone()});
+        proposer.enqueue_command(Command{command: cmd2.clone()});
+        proposer.make_progress_phase_two();
+
+        // check that the messages were sent
+        proposer.messenger.phase_2a_messages.sort();
+        assert_eq!(proposer.messenger.phase_2a_messages.len(), 6);
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[0],
+            (REPLICA1.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[1],
+            (REPLICA1.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[2],
+            (REPLICA2.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[3],
+            (REPLICA2.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[4],
+            (REPLICA3.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[5],
+            (REPLICA3.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+        );
+    }
 }

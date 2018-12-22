@@ -88,7 +88,7 @@ impl fmt::Display for ReplicaID {
 }
 
 // A configuration of the Paxos ensemble.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Configuration {
     // The Paxos ensemble this configuration represents.
     group: GroupID,
@@ -224,6 +224,7 @@ impl Reconfiguration {
 }
 
 // Track a quorum of the Paxos ensemble.
+#[derive(Debug)]
 pub struct QuorumTracker<'a, S> {
     config: &'a Configuration,
     followers: HashMap<&'a ReplicaID, S>,
