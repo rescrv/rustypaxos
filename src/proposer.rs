@@ -244,11 +244,51 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
     }
 
     // Process receipt of a single phase 2b message.
-    pub fn process_phase_2b_message(&mut self) {
+    pub fn process_phase_2b_message(
+        &mut self,
+        acceptor: &ReplicaID,
+        ballot: &Ballot,
+        slot: u64,
+    ) {
         // Protection against misuse by owner
         if self.is_lame_duck {
             self.logger.error_in_lame_duck();
             return;
+        }
+        // Provide basic protection against misbehaving servers participating in the protocol.
+        if !self.config.is_member(acceptor) {
+            self.logger.error_misbehaving_server("not an acceptor");
+            return;
+        }
+        // Make sure the other server is responding to the right ballot.
+        if self.ballot != ballot {
+            self.logger.error_misbehaving_server("wrong ballot");
+            return;
+        }
+        // Make sure we are in phase two.
+        if self.phase != PaxosPhase::TWO {
+            self.logger.error_misbehaving_server("not in phase two");
+            return;
+        }
+        // Get the pvalue state.
+        let pval_state = match self.proposals.get_mut(&slot) {
+            Some(x) => x,
+            None => {
+                if self.lower_slot <= slot {
+                    // XXX report an error
+                }
+                return;
+            },
+        };
+        // If this replica has already accepted.
+        if pval_state.quorum.is_follower(acceptor) {
+            // TODO(rescrv): might be useful to log this.
+            return;
+        }
+        pval_state.quorum.add(acceptor, ());
+        // TODO(rescrv): Decide how to handle this case, because proposer needs to move forward.
+        if pval_state.quorum.has_quorum() {
+            // SUCCESS!
         }
     }
 
@@ -515,7 +555,7 @@ mod tests {
         proposer.logger.assert_ok();
 
         // As will phase two response.
-        proposer.process_phase_2b_message();
+        proposer.process_phase_2b_message(&REPLICA1, &ballot, 1);
         assert!(proposer.logger.saw_in_lame_duck_error);
         proposer.logger.saw_in_lame_duck_error = false;
         proposer.logger.assert_ok();
@@ -977,5 +1017,38 @@ mod tests {
             proposer.messenger.phase_2a_messages[5],
             (REPLICA3.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
         );
+
+        // Replica one responds to pvalue for slot two.
+        proposer.messenger.phase_2a_messages.clear();
+        proposer.process_phase_2b_message(&REPLICA1, &ballot, 2);
+        proposer.make_progress_phase_two();
+
+        // check that the messages were re-sent
+        proposer.messenger.phase_2a_messages.sort();
+        assert_eq!(proposer.messenger.phase_2a_messages.len(), 5);
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[0],
+            (REPLICA1.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[1],
+            (REPLICA2.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[2],
+            (REPLICA2.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[3],
+            (REPLICA3.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+        );
+        assert_eq!(
+            proposer.messenger.phase_2a_messages[4],
+            (REPLICA3.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+        );
     }
+
+    // TODO:
+    // - check all the cases of process_phase_two
+    // - check that when there are existing pvalues our phase two sends them out as our own
 }
