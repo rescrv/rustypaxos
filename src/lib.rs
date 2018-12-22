@@ -1,3 +1,4 @@
+pub mod acceptor;
 pub mod configuration;
 pub mod proposer;
 pub mod simulator;
@@ -20,7 +21,7 @@ pub struct Ballot {
 }
 
 impl Ballot {
-    fn new(number: u64, leader: &ReplicaID) -> Ballot {
+    pub fn new(number: u64, leader: &ReplicaID) -> Ballot {
         Ballot {
             number,
             leader: leader.clone(),
@@ -39,8 +40,7 @@ impl fmt::Display for Ballot {
 pub struct PValue {
     slot: u64,
     ballot: Ballot,
-    // TODO(rescrv): type this differently
-    command: String,
+    command: Command,
 }
 
 impl PValue {
@@ -48,9 +48,14 @@ impl PValue {
         PValue {
             slot,
             ballot,
-            command,
+            command: Command{command},
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
+pub struct Command {
+    command: String,
 }
 
 // XXX type Command string
@@ -214,12 +219,21 @@ mod testutil {
 
     pub use crate::configuration::testutil::*;
 
-    pub fn ballot_4_replica1() -> Ballot { Ballot::new(4, &REPLICA1) }
-    pub fn ballot_5_replica1() -> Ballot { Ballot::new(5, &REPLICA1) }
-    pub fn ballot_6_replica1() -> Ballot { Ballot::new(6, &REPLICA1) }
-    pub fn ballot_7_replica1() -> Ballot { Ballot::new(7, &REPLICA1) }
-
-    pub fn ballot_6_replica2() -> Ballot { Ballot::new(6, &REPLICA2) }
+    pub fn ballot_4_replica1() -> Ballot {
+        Ballot::new(4, &REPLICA1)
+    }
+    pub fn ballot_5_replica1() -> Ballot {
+        Ballot::new(5, &REPLICA1)
+    }
+    pub fn ballot_6_replica1() -> Ballot {
+        Ballot::new(6, &REPLICA1)
+    }
+    pub fn ballot_7_replica1() -> Ballot {
+        Ballot::new(7, &REPLICA1)
+    }
+    pub fn ballot_6_replica2() -> Ballot {
+        Ballot::new(6, &REPLICA2)
+    }
 }
 
 #[cfg(test)]

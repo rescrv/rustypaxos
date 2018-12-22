@@ -5,8 +5,9 @@ use rand;
 use rand::rngs::EntropyRng;
 use rand::Rng;
 
-const ID_BYTES: usize = 16;
-const DEFAULT_ALPHA: u64 = 16;
+pub const ID_BYTES: usize = 16;
+pub const DEFAULT_ALPHA: u64 = 16;
+pub const MAXIMUM_ALPHA: u64 = 1000000;
 
 // Generate 16B unique identifier.
 fn gen_id() -> Result<[u8; ID_BYTES], rand::Error> {
@@ -85,12 +86,14 @@ impl fmt::Display for ReplicaID {
     }
 }
 
+// A configuration of the Paxos ensemble.
+#[derive(Clone)]
 pub struct Configuration {
     // The Paxos ensemble this configuration represents.
     group: GroupID,
     // A sequence number indicating how many configurations this ensemble has had.  The first
-    // configuration is version=1.
-    version: u64,
+    // configuration is epoch=1.
+    epoch: u64,
     // The smallest slot this configuration is allowed to address.  The first slot=1.
     slot: u64,
     // The number of proposals that may be issued concurrently.
@@ -111,7 +114,7 @@ impl Configuration {
     ) -> Configuration {
         Configuration {
             group: group.clone(),
-            version: 1,
+            epoch: 1,
             slot: 1,
             alpha: DEFAULT_ALPHA,
             replicas: replicas.to_vec(),
@@ -119,8 +122,28 @@ impl Configuration {
         }
     }
 
+    pub fn reconfigure(self) -> Reconfiguration {
+        let alpha = self.alpha;
+        Reconfiguration{
+            config: self,
+            alpha,
+        }
+    }
+
+    pub fn group(&self) -> &GroupID {
+        &self.group
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     pub fn first_valid_slot(&self) -> u64 {
         self.slot
+    }
+
+    pub fn alpha(&self) -> u64 {
+        self.alpha
     }
 
     pub fn is_member(&self, member: &ReplicaID) -> bool {
@@ -169,6 +192,33 @@ impl Configuration {
             }
         }
         self.replicas.len() / 2 + 1 <= count
+    }
+}
+
+// Reconfiguration of the Paxos ensemble.
+pub struct Reconfiguration {
+    config: Configuration,
+    alpha: u64,
+}
+
+impl Reconfiguration {
+    // Commit the configuration starting with the given slot.
+    //
+    // # Panics
+    //
+    // * The slot parameter must be at least as great as the present configuration's start slot
+    //   plus its original alpha value.
+    pub fn commit(mut self, slot: u64) -> Configuration {
+        assert!(self.config.slot + self.alpha <= slot, "alpha window size not respected");
+        self.config.epoch += 1;
+        self.config.slot = slot;
+        self.config
+    }
+
+    pub fn set_alpha(&mut self, alpha: u64) -> &mut Reconfiguration {
+        assert!(0 < alpha && alpha <= MAXIMUM_ALPHA);
+        self.config.alpha = alpha;
+        self
     }
 }
 
@@ -265,6 +315,13 @@ mod tests {
             REPLICA1.to_string(),
             "replica:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         );
+    }
+
+    // Test that the first config has epoch=1
+    #[test]
+    fn first_epoch() {
+        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        assert_eq!(config.epoch(), 1);
     }
 
     // Test that is replica returns true for every replica and false for every shadow.
@@ -406,5 +463,51 @@ mod tests {
                 _ => false,
             }
         }));
+    }
+
+    // Test reconfigure increments epoch
+    #[test]
+    fn reconfigure_epoch() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = config.reconfigure();
+        let config = config.commit(1 + DEFAULT_ALPHA);
+        assert!(config.epoch() == 2);
+    }
+
+    // Test reconfigure respects alpha
+    #[test]
+    #[should_panic]
+    fn reconfigure_respects_alpha() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = config.reconfigure();
+        config.commit(DEFAULT_ALPHA);
+    }
+
+    // Test reconfigure alpha
+    #[test]
+    fn reconfigure_alpha() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let mut config = config.reconfigure();
+        config.set_alpha(1);
+        let config = config.commit(1 + DEFAULT_ALPHA);
+        assert!(config.alpha() == 1);
+    }
+
+    // Test reconfigure will not allow a zero alpha
+    #[test]
+    #[should_panic]
+    fn reconfigure_alpha_zero() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let mut config = config.reconfigure();
+        config.set_alpha(0);
+    }
+
+    // Test reconfigure will not allow a too-large alpha
+    #[test]
+    #[should_panic]
+    fn reconfigure_alpha_maximum() {
+        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let mut config = config.reconfigure();
+        config.set_alpha(MAXIMUM_ALPHA + 1);
     }
 }
