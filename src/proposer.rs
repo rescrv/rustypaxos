@@ -2,8 +2,9 @@ use super::configuration::Configuration;
 use super::configuration::QuorumTracker;
 use super::configuration::ReplicaID;
 use super::Ballot;
-use super::PValue;
 use super::Command;
+use super::Misbehavior;
+use super::PValue;
 use super::PaxosPhase;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -11,19 +12,15 @@ use std::collections::VecDeque;
 use std::ops::Range;
 
 pub trait Logger {
+    fn report_misbehavior(&mut self, m: Misbehavior);
+
+    // TODO(rescrv): kill lame duck
     // transitioning to lame duck
     fn become_lame_duck(&mut self, superceded_by: &Ballot);
 
     // stale proposals are possible, but should be minimal in steady state
     // TODO(rescrv) rename this
     fn stale_proposal(&mut self, superceded_by: &Ballot);
-
-    // someone sent a bad message
-    fn error_misbehaving_server(&mut self, msg: &str);
-    // no one should call us in lame duck, so log if they do
-    fn error_in_lame_duck(&mut self);
-    // pvalues have invariants
-    fn error_pvalue_conflict(&mut self, p1: &PValue, p2: &PValue);
 }
 
 pub trait Messenger {
@@ -86,7 +83,8 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
     pub fn enqueue_command(&mut self, cmd: Command) {
         // Protection against misuse by owner
         if self.is_lame_duck {
-            self.logger.error_in_lame_duck();
+            self.logger
+                .report_misbehavior(Misbehavior::ProposerInLameDuck);
             return;
         }
         // Enqueue the command and then shift commands to the proposals.
@@ -123,7 +121,11 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
         assert!(self.lower_slot <= self.upper_slot);
         let lower = self.lower_slot;
         let alpha = self.lower_slot + self.config.alpha();
-        let upper = if self.upper_slot < alpha { self.upper_slot } else { alpha };
+        let upper = if self.upper_slot < alpha {
+            self.upper_slot
+        } else {
+            alpha
+        };
         lower..upper
     }
 
@@ -131,7 +133,8 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
     pub fn make_progress(&mut self) {
         // Protection against misuse by owner
         if self.is_lame_duck {
-            self.logger.error_in_lame_duck();
+            self.logger
+                .report_misbehavior(Misbehavior::ProposerInLameDuck);
             return;
         }
         // Send phase one messages to replicas we haven't had join our quorum.
@@ -153,12 +156,14 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
     ) {
         // Protection against misuse by owner
         if self.is_lame_duck {
-            self.logger.error_in_lame_duck();
+            self.logger
+                .report_misbehavior(Misbehavior::ProposerInLameDuck);
             return;
         }
         // Provide basic protection against misbehaving servers participating in the protocol.
         if !self.config.is_member(acceptor) {
-            self.logger.error_misbehaving_server("not an acceptor");
+            self.logger
+                .report_misbehavior(Misbehavior::NotAReplica(*acceptor));
             return;
         }
         // Become a lame duck if this proposer has been superceded.
@@ -186,7 +191,13 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
         // Validate that all pvalues from the acceptor are less than the current acceptor's ballot.
         for pval in pvalues {
             if self.ballot < &pval.ballot {
-                self.logger.error_misbehaving_server("acceptor reports pval higher than current ballot");
+                // TODO(rescrv): write a test for this.
+                self.logger
+                    .report_misbehavior(Misbehavior::Phase1PValueAboveBallot(
+                        *acceptor,
+                        *self.ballot,
+                        pval.clone(),
+                    ));
                 return;
             }
         }
@@ -216,9 +227,13 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
                         // the same command.  Because we enforce this in a distributed fashion across
                         // all replicas, we cannot do anything except check to make sure this is true
                         // and log when it is violated.
-                        if entry.get().pval.ballot == pval.ballot && entry.get().pval.command != pval.command
+                        if entry.get().pval.ballot == pval.ballot
+                            && entry.get().pval.command != pval.command
                         {
-                            self.logger.error_pvalue_conflict(&entry.get().pval, pval);
+                            self.logger.report_misbehavior(Misbehavior::PValueConflict(
+                                entry.get().pval.clone(),
+                                pval.clone(),
+                            ));
                         }
                         *entry.get_mut() = PValueState::wrap(self.config, pval.clone());
                     }
@@ -244,30 +259,35 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
     }
 
     // Process receipt of a single phase 2b message.
-    pub fn process_phase_2b_message(
-        &mut self,
-        acceptor: &ReplicaID,
-        ballot: &Ballot,
-        slot: u64,
-    ) {
+    pub fn process_phase_2b_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot, slot: u64) {
         // Protection against misuse by owner
         if self.is_lame_duck {
-            self.logger.error_in_lame_duck();
+            self.logger
+                .report_misbehavior(Misbehavior::ProposerInLameDuck);
             return;
         }
         // Provide basic protection against misbehaving servers participating in the protocol.
         if !self.config.is_member(acceptor) {
-            self.logger.error_misbehaving_server("not an acceptor");
+            self.logger
+                .report_misbehavior(Misbehavior::NotAReplica(*acceptor));
             return;
         }
         // Make sure the other server is responding to the right ballot.
         if self.ballot != ballot {
-            self.logger.error_misbehaving_server("wrong ballot");
+            // TODO(rescrv): write a test for this
+            self.logger
+                .report_misbehavior(Misbehavior::Phase2WrongBallot(
+                    *acceptor,
+                    *self.ballot,
+                    *ballot,
+                ));
             return;
         }
         // Make sure we are in phase two.
         if self.phase != PaxosPhase::TWO {
-            self.logger.error_misbehaving_server("not in phase two");
+            // TODO(rescrv): write a test for this
+            self.logger
+                .report_misbehavior(Misbehavior::NotInPhase2(*acceptor, *self.ballot));
             return;
         }
         // Get the pvalue state.
@@ -275,10 +295,14 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             Some(x) => x,
             None => {
                 if self.lower_slot <= slot {
-                    // XXX report an error
+                    // TODO(rescrv): write a test for this
+                    self.logger
+                        .report_misbehavior(Misbehavior::Phase2LostPValue(
+                            *acceptor, *ballot, slot,
+                        ));
                 }
                 return;
-            },
+            }
         };
         // If this replica has already accepted.
         if pval_state.quorum.is_follower(acceptor) {
@@ -327,11 +351,14 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
                     Some(cmd) => cmd,
                     None => return,
                 };
-                entry.insert(PValueState::wrap(self.config, PValue {
-                    slot,
-                    ballot: self.ballot.clone(),
-                    command,
-                }));
+                entry.insert(PValueState::wrap(
+                    self.config,
+                    PValue {
+                        slot,
+                        ballot: *self.ballot,
+                        command,
+                    },
+                ));
             }
         }
     }
@@ -378,32 +405,26 @@ mod tests {
     use crate::testutil::*;
     use crate::PValue;
 
-    #[derive(Eq, PartialEq)]
     struct TestLogger {
+        // TODO(rescrv): helper functions around this
+        misbehaviors: Vec<Misbehavior>,
+
         lame_duck_superceded_by: Option<Ballot>,
         last_stale_proposal: Option<Ballot>,
-        saw_misbehaving_server_error: bool,
-        saw_in_lame_duck_error: bool,
-        saw_pvalue_conflict_error: bool,
     }
 
     impl TestLogger {
         fn new() -> TestLogger {
             TestLogger {
+                misbehaviors: Vec::new(),
                 lame_duck_superceded_by: None,
                 last_stale_proposal: None,
-                saw_misbehaving_server_error: false,
-                saw_in_lame_duck_error: false,
-                saw_pvalue_conflict_error: false,
             }
         }
 
         fn assert_ok(&self) {
             assert!(self.lame_duck_superceded_by == None);
             assert!(self.last_stale_proposal == None);
-            assert!(!self.saw_misbehaving_server_error);
-            assert!(!self.saw_in_lame_duck_error);
-            assert!(!self.saw_pvalue_conflict_error);
         }
     }
 
@@ -423,43 +444,33 @@ mod tests {
 
     impl Messenger for TestMessenger {
         fn send_phase_1a_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot) {
-            self.phase_1a_messages
-                .push((acceptor.clone(), ballot.clone()));
+            self.phase_1a_messages.push((*acceptor, *ballot));
         }
 
         fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue) {
-            self.phase_2a_messages
-                .push((acceptor.clone(), pval.clone()));
+            self.phase_2a_messages.push((*acceptor, pval.clone()));
         }
     }
 
     impl Logger for TestLogger {
+        fn report_misbehavior(&mut self, m: Misbehavior) {
+            self.misbehaviors.push(m);
+        }
+
         fn become_lame_duck(&mut self, superceded_by: &Ballot) {
-            self.lame_duck_superceded_by = Some(superceded_by.clone());
+            self.lame_duck_superceded_by = Some(*superceded_by);
         }
 
         fn stale_proposal(&mut self, stale: &Ballot) {
-            self.last_stale_proposal = Some(stale.clone());
-        }
-
-        fn error_misbehaving_server(&mut self, _msg: &str) {
-            self.saw_misbehaving_server_error = true;
-        }
-
-        fn error_in_lame_duck(&mut self) {
-            self.saw_in_lame_duck_error = true;
-        }
-
-        fn error_pvalue_conflict(&mut self, _p1: &PValue, _p2: &PValue) {
-            self.saw_pvalue_conflict_error = true;
+            self.last_stale_proposal = Some(*stale);
         }
     }
 
     // Test that three replicas responding to phase one will achieve quorum.
     #[test]
     fn three_replicas_phase_one_no_pvalues() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -486,8 +497,8 @@ mod tests {
     // Test that five replicas responding to phase one will achieve quorum.
     #[test]
     fn five_replicas_phase_one_no_pvalues() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -526,53 +537,62 @@ mod tests {
     // Test that proposer will enter into lame duck and self-enforce lame duck.
     #[test]
     fn lame_duck() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
 
         // Seeing a higher ballot in phase one will cause it to lame-duck itself.
-        proposer.process_phase_1b_message(&REPLICA1, &ballot_6_replica1(), &[]);
+        proposer.process_phase_1b_message(&REPLICA1, &BALLOT_6_REPLICA1, &[]);
         assert_eq!(
             proposer.logger.lame_duck_superceded_by,
-            Some(ballot_6_replica1())
+            Some(BALLOT_6_REPLICA1)
         );
         proposer.logger.lame_duck_superceded_by = None;
-        assert!(!proposer.logger.saw_in_lame_duck_error);
         proposer.logger.assert_ok();
 
         // Which means that if we try to make progress it will error out with a lame duck error
         proposer.make_progress();
-        assert!(proposer.logger.saw_in_lame_duck_error);
-        proposer.logger.saw_in_lame_duck_error = false;
-        proposer.logger.assert_ok();
+        assert_eq!(
+            proposer.logger.misbehaviors[0],
+            Misbehavior::ProposerInLameDuck
+        );
+        proposer.logger.misbehaviors.clear();
 
         // And subsequent phase one responses will get dropped.
         proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
-        assert!(proposer.logger.saw_in_lame_duck_error);
-        proposer.logger.saw_in_lame_duck_error = false;
-        proposer.logger.assert_ok();
+        assert_eq!(
+            proposer.logger.misbehaviors[0],
+            Misbehavior::ProposerInLameDuck
+        );
+        proposer.logger.misbehaviors.clear();
 
         // As will phase two response.
         proposer.process_phase_2b_message(&REPLICA1, &ballot, 1);
-        assert!(proposer.logger.saw_in_lame_duck_error);
-        proposer.logger.saw_in_lame_duck_error = false;
-        proposer.logger.assert_ok();
+        assert_eq!(
+            proposer.logger.misbehaviors[0],
+            Misbehavior::ProposerInLameDuck
+        );
+        proposer.logger.misbehaviors.clear();
 
         // And of course that means no more proposals
-        proposer.enqueue_command(Command{command: String::from("command")});
-        assert!(proposer.logger.saw_in_lame_duck_error);
-        proposer.logger.saw_in_lame_duck_error = false;
-        proposer.logger.assert_ok();
+        proposer.enqueue_command(Command {
+            command: String::from("command"),
+        });
+        assert_eq!(
+            proposer.logger.misbehaviors[0],
+            Misbehavior::ProposerInLameDuck
+        );
+        proposer.logger.misbehaviors.clear();
     }
 
     // Test that an acceptor that's not part of the ensemble cannot accept.
     // Replicas one, two, three are included, four is a shadow, and five is excluded.
     #[test]
     fn outside_acceptors_not_allowed() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[REPLICA4]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[REPLICA4]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -589,15 +609,18 @@ mod tests {
 
         // From a non-member should cause misbehaving server error and not advance the phase.
         proposer.process_phase_1b_message(&REPLICA5, &ballot, &[]);
-        assert!(proposer.logger.saw_misbehaving_server_error);
+        assert_eq!(
+            proposer.logger.misbehaviors[0],
+            Misbehavior::NotAReplica(REPLICA5)
+        );
         assert_eq!(proposer.phase, PaxosPhase::ONE);
     }
 
     // Test that a stale phase one response has zero effect.
     #[test]
     fn stale_phase_one_response() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -608,10 +631,10 @@ mod tests {
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Stale second response should not be counted.
-        proposer.process_phase_1b_message(&REPLICA2, &ballot_4_replica1(), &[]);
+        proposer.process_phase_1b_message(&REPLICA2, &BALLOT_4_REPLICA1, &[]);
         assert_eq!(
             proposer.logger.last_stale_proposal,
-            Some(ballot_4_replica1())
+            Some(BALLOT_4_REPLICA1)
         );
         assert_eq!(proposer.phase, PaxosPhase::ONE);
     }
@@ -619,8 +642,8 @@ mod tests {
     // Test that an acceptor cannot sybil their way to having a leader.
     #[test]
     fn double_commitment_to_follow() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -644,12 +667,12 @@ mod tests {
     // Test that acceptors with the same pvalues become accepted.
     #[test]
     fn normal_acceptors_with_pvalues() {
-        let pval1 = PValue::new(1, ballot_5_replica1(), String::from("command"));
-        let pval2 = PValue::new(2, ballot_6_replica2(), String::from("command"));
-        let pval3 = PValue::new(3, ballot_6_replica2(), String::from("command"));
+        let pval1 = PValue::new(1, BALLOT_5_REPLICA1, String::from("command"));
+        let pval2 = PValue::new(2, BALLOT_6_REPLICA2, String::from("command"));
+        let pval3 = PValue::new(3, BALLOT_6_REPLICA2, String::from("command"));
 
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_7_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_7_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -673,14 +696,14 @@ mod tests {
     // Test that the highest pvalue for the same slot gets retained.
     #[test]
     fn pvalues_for_the_same_slot() {
-        let pval1 = PValue::new(1, ballot_5_replica1(), String::from("command"));
-        let pval2a = PValue::new(2, ballot_6_replica1(), String::from("command"));
-        let pval2b = PValue::new(2, ballot_6_replica2(), String::from("command"));
-        let pval3a = PValue::new(3, ballot_6_replica1(), String::from("command"));
-        let pval3b = PValue::new(3, ballot_6_replica2(), String::from("command"));
+        let pval1 = PValue::new(1, BALLOT_5_REPLICA1, String::from("command"));
+        let pval2a = PValue::new(2, BALLOT_6_REPLICA1, String::from("command"));
+        let pval2b = PValue::new(2, BALLOT_6_REPLICA2, String::from("command"));
+        let pval3a = PValue::new(3, BALLOT_6_REPLICA1, String::from("command"));
+        let pval3b = PValue::new(3, BALLOT_6_REPLICA2, String::from("command"));
 
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_7_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_7_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -713,11 +736,11 @@ mod tests {
     // Test that pvalues with same ballot/slot, but different command will be logged.
     #[test]
     fn pvalue_conflicts_are_logged() {
-        let pval1a = PValue::new(1, ballot_6_replica1(), String::from("red fish"));
-        let pval1b = PValue::new(1, ballot_6_replica1(), String::from("blue fish"));
+        let pval1a = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
+        let pval1b = PValue::new(1, BALLOT_6_REPLICA1, String::from("blue fish"));
 
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_7_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_7_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -732,18 +755,21 @@ mod tests {
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
         assert_eq!(proposer.peek_slot(1), Some(&pval1b));
-        assert!(proposer.logger.saw_pvalue_conflict_error);
+        assert_eq!(
+            proposer.logger.misbehaviors[0],
+            Misbehavior::PValueConflict(pval1a.clone(), pval1b.clone())
+        );
     }
 
     // Test that a late-arriving acceptor will be excluded until after the slot for which the
     // conflict happened.
     #[test]
     fn late_acceptors_will_delay() {
-        let pval1a = PValue::new(1, ballot_6_replica1(), String::from("red fish"));
-        let pval1b = PValue::new(1, ballot_7_replica1(), String::from("blue fish"));
+        let pval1a = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
+        let pval1b = PValue::new(1, BALLOT_7_REPLICA1, String::from("blue fish"));
 
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_7_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_7_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -768,8 +794,8 @@ mod tests {
     // Test that make_progess will send a phase one message to every unaccepted acceptor.
     #[test]
     fn make_progress_sends_phase_one() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -777,58 +803,31 @@ mod tests {
         // At first, we must message everyone to make progress.
         proposer.make_progress();
         assert_eq!(proposer.messenger.phase_1a_messages.len(), 5);
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[0],
-            (REPLICA1.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[1],
-            (REPLICA2.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[2],
-            (REPLICA3.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[3],
-            (REPLICA4.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[4],
-            (REPLICA5.clone(), ballot.clone())
-        );
+        assert_eq!(proposer.messenger.phase_1a_messages[0], (REPLICA1, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[1], (REPLICA2, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[2], (REPLICA3, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[3], (REPLICA4, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[4], (REPLICA5, ballot));
 
         // If we were to get a response from REPLICA3, we should not pester it again.
         proposer.messenger.phase_1a_messages.clear();
         proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
         proposer.make_progress();
         assert_eq!(proposer.messenger.phase_1a_messages.len(), 4);
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[0],
-            (REPLICA1.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[1],
-            (REPLICA2.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[2],
-            (REPLICA4.clone(), ballot.clone())
-        );
-        assert_eq!(
-            proposer.messenger.phase_1a_messages[3],
-            (REPLICA5.clone(), ballot.clone())
-        );
+        assert_eq!(proposer.messenger.phase_1a_messages[0], (REPLICA1, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[1], (REPLICA2, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[2], (REPLICA4, ballot));
+        assert_eq!(proposer.messenger.phase_1a_messages[3], (REPLICA5, ballot));
     }
 
     // Test that the proposer discards values outside the slots it was chosen for.
     #[test]
     fn pvalues_before_configuration_start_are_discarded() {
-        let pval = PValue::new(1, ballot_6_replica1(), String::from("red fish"));
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let pval = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let config = config.reconfigure();
         let config = config.commit(128);
-        let ballot = ballot_5_replica1();
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -841,8 +840,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn advance_window_monotonic() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -854,8 +853,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn stop_at_slot_monotonic() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -866,8 +865,8 @@ mod tests {
     // Test the sliding window for enqueued commands.
     #[test]
     fn sliding_window_over_commands() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -879,7 +878,9 @@ mod tests {
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         for i in 0u64..DEFAULT_ALPHA + 5u64 {
-            proposer.enqueue_command(Command{command: String::from("command")});
+            proposer.enqueue_command(Command {
+                command: String::from("command"),
+            });
             if i < DEFAULT_ALPHA {
                 assert_eq!(proposer.proposals.len() as u64, i + 1);
                 assert!(proposer.proposals.contains_key(&(i + 1)));
@@ -905,7 +906,9 @@ mod tests {
         assert!(proposer.commands.len() == 0);
         assert_eq!(proposer.active_slots(), 7u64..(DEFAULT_ALPHA + 7));
 
-        proposer.enqueue_command(Command{command: String::from("command")});
+        proposer.enqueue_command(Command {
+            command: String::from("command"),
+        });
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA);
         assert!(proposer.proposals.contains_key(&(DEFAULT_ALPHA + 6)));
         assert!(proposer.commands.len() == 0);
@@ -915,14 +918,16 @@ mod tests {
     // Test that commands get enqueued on transition to phase two.
     #[test]
     fn enqueue_prior_to_phase_two() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
 
         for i in 0..7 {
-            proposer.enqueue_command(Command{command: String::from("command")});
+            proposer.enqueue_command(Command {
+                command: String::from("command"),
+            });
             assert_eq!(proposer.proposals.len(), 0);
             assert_eq!(proposer.commands.len(), (i + 1) as usize);
         }
@@ -938,8 +943,8 @@ mod tests {
     // Test the sliding window stops enqueuing at the stop slot.
     #[test]
     fn sliding_window_stop_at_slot() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -957,13 +962,17 @@ mod tests {
         proposer.stop_at_slot(ITERS + 1);
 
         for i in 0u64..ITERS {
-            proposer.enqueue_command(Command{command: String::from("command")});
+            proposer.enqueue_command(Command {
+                command: String::from("command"),
+            });
             assert_eq!(proposer.proposals.len() as u64, i + 1);
             assert_eq!(proposer.commands.len() as u64, 0);
         }
 
         for i in 0u64..ITERS {
-            proposer.enqueue_command(Command{command: String::from("command")});
+            proposer.enqueue_command(Command {
+                command: String::from("command"),
+            });
             assert_eq!(proposer.proposals.len() as u64, ITERS);
             assert_eq!(proposer.commands.len() as u64, i + 1);
         }
@@ -972,8 +981,8 @@ mod tests {
     // Test that phase two sends messages with pvalues.
     #[test]
     fn make_progress_sends_phase_two() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, &[]);
-        let ballot = ballot_5_replica1();
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, &[]);
+        let ballot = BALLOT_5_REPLICA1;
         let mut logger = TestLogger::new();
         let mut messenger = TestMessenger::new();
         let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
@@ -986,8 +995,12 @@ mod tests {
 
         let cmd1 = String::from("command 1");
         let cmd2 = String::from("command 2");
-        proposer.enqueue_command(Command{command: cmd1.clone()});
-        proposer.enqueue_command(Command{command: cmd2.clone()});
+        proposer.enqueue_command(Command {
+            command: cmd1.clone(),
+        });
+        proposer.enqueue_command(Command {
+            command: cmd2.clone(),
+        });
         proposer.make_progress_phase_two();
 
         // check that the messages were sent
@@ -995,27 +1008,27 @@ mod tests {
         assert_eq!(proposer.messenger.phase_2a_messages.len(), 6);
         assert_eq!(
             proposer.messenger.phase_2a_messages[0],
-            (REPLICA1.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+            (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[1],
-            (REPLICA1.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+            (REPLICA1, PValue::new(2, ballot, cmd2.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[2],
-            (REPLICA2.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+            (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[3],
-            (REPLICA2.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+            (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[4],
-            (REPLICA3.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+            (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[5],
-            (REPLICA3.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+            (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
         );
 
         // Replica one responds to pvalue for slot two.
@@ -1028,23 +1041,23 @@ mod tests {
         assert_eq!(proposer.messenger.phase_2a_messages.len(), 5);
         assert_eq!(
             proposer.messenger.phase_2a_messages[0],
-            (REPLICA1.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+            (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[1],
-            (REPLICA2.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+            (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[2],
-            (REPLICA2.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+            (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[3],
-            (REPLICA3.clone(), PValue::new(1, ballot.clone(), cmd1.clone())),
+            (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
         );
         assert_eq!(
             proposer.messenger.phase_2a_messages[4],
-            (REPLICA3.clone(), PValue::new(2, ballot.clone(), cmd2.clone())),
+            (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
         );
     }
 

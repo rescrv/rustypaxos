@@ -14,18 +14,33 @@ pub enum PaxosPhase {
 }
 
 // A Ballot matches the Paxos terminology and consists of an ordered pair of (number,leader).
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Copy)]
 pub struct Ballot {
     number: u64,
     leader: ReplicaID,
 }
 
 impl Ballot {
+    pub fn bottom() -> Ballot {
+        Ballot {
+            number: 0,
+            leader: ReplicaID::bottom(),
+        }
+    }
+
     pub fn new(number: u64, leader: &ReplicaID) -> Ballot {
         Ballot {
             number,
             leader: leader.clone(),
         }
+    }
+
+    pub fn number(&self) -> u64 {
+        self.number
+    }
+
+    pub fn leader(&self) -> ReplicaID {
+        self.leader
     }
 }
 
@@ -48,8 +63,20 @@ impl PValue {
         PValue {
             slot,
             ballot,
-            command: Command{command},
+            command: Command { command },
         }
+    }
+}
+
+impl fmt::Display for PValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "pvalue:{}:{}:{}",
+            self.slot,
+            self.ballot.number,
+            self.ballot.leader.viewable_id()
+        )
     }
 }
 
@@ -58,160 +85,46 @@ pub struct Command {
     command: String,
 }
 
-// XXX type Command string
-// XXX type DedupeToken uint64
-//type DurabilityWatermark uint64
-//
-//type DurableStorage interface {
-//	PersistPhase1(promise Ballot) DurabilityWatermark
-//	PersistPhase2(pvalue PValue) DurabilityWatermark
-//	WaitUntilDurable(offset DurabilityWatermark)
-//	CheckInvariants()
-//}
-//package paxos
-//
-//import (
-//	"log"
-//
-//	"hack.systems/util/assert"
-//)
-//
-//type Paxos struct {
-//	thisServer ReplicaID
-//	storage    DurableStorage
-//	acceptor   *Acceptor
-//	proposer   *Proposer
-//	config     *Configuration
-//	ticker     WeightedTicker
-//	log        bool
-//	// XXX proposals waiting to go out
-//	// XXX proposals waiting for success
-//	/*
-//	   uint64_t m_scout_wait_cycles;
-//	*/
-//}
-//
-//func New(c Configuration, id ReplicaID, storage DurableStorage) *Paxos {
-//	p := &Paxos{
-//		thisServer: id,
-//		storage:    storage,
-//		acceptor:   NewAcceptor(storage),
-//		config:     &c,
-//	}
-//	p.ticker.Configure(p.config.ReplicaIndex(id))
-//	return p
-//}
-//
-//func (p *Paxos) Tick() {
-//	p.ticker.Tick()
-//	if !p.ticker.Active() {
-//		p.Logf("inactive tick")
-//	}
-//	if p.proposer == nil {
-//		b := p.AcceptorMaxBallot()
-//		b.Number++
-//		b.Leader = p.thisServer
-//		/*
-//			for _, p := range s.replicas {
-//				b := p.AcceptorMaxBallot()
-//				if b.Number > number {
-//					number = b.Number
-//				}
-//				if p.HasProposer() {
-//					b = p.ProposerBallot()
-//					if b.Number > number {
-//						number = b.Number
-//					}
-//				}
-//			}
-//		*/
-//	}
-//	p.Logf("ACTIVE!")
-//}
-//
-//func (p *Paxos) GenerateToken() DedupeToken {
-//	return 0 // XXX
-//}
-//
-//// XXX this is a bad API; should return token, slot
-//func (p *Paxos) RefreshToken(tok DedupeToken) DedupeToken {
-//	return tok // XXX
-//}
-//
-//func (p *Paxos) Propose(tok DedupeToken, cmd Command) {
-//}
-//
-//func (p *Paxos) AcceptorMaxBallot() Ballot {
-//	return p.acceptor.MaxBallot()
-//}
-//
-///*
-//func (p *Paxos) AcceptorPhase1(b Ballot, start, limit Slot) (Ballot, []PValue, DurabilityWatermark) {
-//}
-//
-//func (p *Paxos) AcceptorPhase2(pval PValue) Ballot {
-//}
-//*/
-//
-//func (p *Paxos) HasProposer() bool {
-//	return p.proposer != nil
-//}
-//
-//func (p *Paxos) ProposerBallot() Ballot {
-//	assert.True(p.HasProposer(),
-//		"HasProposer() must be true when calling ProposerBallot")
-//	return p.proposer.ballot
-//}
-//
-//func (p *Paxos) ProposerStart(b Ballot) {
-//	assert.True(p.proposer == nil || b.Supercedes(p.proposer.ballot),
-//		"new proposers must have a higher ballot than old proposers")
-//}
-//
-//func (p *Paxos) ProposerStep() {
-//	assert.True(p.proposer != nil, "cannot step non-nil proposer")
-//	p.proposer.WorkStateMachine(nil)
-//}
-//
-//func (p *Paxos) CheckInvariants() {
-//	p.acceptor.CheckInvariants()
-//	p.proposer.CheckInvariants()
-//	p.storage.CheckInvariants()
-//}
-//
-//
-//package paxos
-//
-//// WeightedTicker biases the output of a time.Ticker to reduce the likelihood
-//// that two live instances of Paxos race to being a round of Paxos with a higher
-//// ballot.  It is probabilistic in nature:  Races can still happen, but the
-//// probability of the race continuing goes to zero so long as the tick interval
-//// of all instances is longer than the expected latency of Phase 1 and all tick
-//// intervals are within a factor of two of each other.
-//type WeightedTicker struct {
-//	index uint
-//	count int
-//}
-//
-//func (t *WeightedTicker) Configure(index int) {
-//	if index >= 0 && index < MaxReplicas {
-//		t.index = uint(index)
-//	} else {
-//		t.index = MaxReplicas
-//	}
-//	t.count = -1
-//}
-//
-//func (t *WeightedTicker) Tick() {
-//	t.count--
-//	if t.count < 0 {
-//		t.count = 1<<t.index - 1
-//	}
-//}
-//
-//func (t *WeightedTicker) Active() bool {
-//	return t.count == 0
-//}
+#[derive(Debug, Eq, PartialEq)]
+pub enum Misbehavior {
+    ProposerInLameDuck,
+    PValueConflict(PValue, PValue),
+    NotAReplica(ReplicaID), // TODO(rescrv): does config matter here?
+    NotInPhase2(ReplicaID, Ballot),
+    Phase1PValueAboveBallot(ReplicaID, Ballot, PValue),
+    Phase2WrongBallot(ReplicaID, Ballot, Ballot),
+    Phase2LostPValue(ReplicaID, Ballot, u64),
+}
+
+#[derive(Eq, PartialEq)]
+pub struct Paxos {
+    id: ReplicaID,
+}
+
+impl Paxos {
+    pub fn new(id: ReplicaID) -> Paxos {
+        Paxos {
+            id
+        }
+    }
+
+    pub fn id(&self) -> ReplicaID {
+        self.id
+    }
+
+    // XXX
+    pub fn acceptor_ballot(&self) -> Ballot {
+        Ballot{number: 1, leader: self.id}
+    }
+
+    // XXX
+    pub fn proposer_ballot(&self) -> Ballot {
+        Ballot{number: 1, leader: self.id}
+    }
+
+    pub fn start_proposer(&mut self, ballot: &Ballot) {
+    }
+}
 
 #[cfg(test)]
 mod testutil {
@@ -219,32 +132,42 @@ mod testutil {
 
     pub use crate::configuration::testutil::*;
 
-    pub fn ballot_4_replica1() -> Ballot {
-        Ballot::new(4, &REPLICA1)
-    }
-    pub fn ballot_5_replica1() -> Ballot {
-        Ballot::new(5, &REPLICA1)
-    }
-    pub fn ballot_6_replica1() -> Ballot {
-        Ballot::new(6, &REPLICA1)
-    }
-    pub fn ballot_7_replica1() -> Ballot {
-        Ballot::new(7, &REPLICA1)
-    }
-    pub fn ballot_6_replica2() -> Ballot {
-        Ballot::new(6, &REPLICA2)
-    }
+    pub const BALLOT_4_REPLICA1: Ballot = Ballot {
+        number: 4,
+        leader: REPLICA1,
+    };
+
+    pub const BALLOT_5_REPLICA1: Ballot = Ballot {
+        number: 5,
+        leader: REPLICA1,
+    };
+
+    pub const BALLOT_6_REPLICA1: Ballot = Ballot {
+        number: 6,
+        leader: REPLICA1,
+    };
+
+    pub const BALLOT_6_REPLICA2: Ballot = Ballot {
+        number: 6,
+        leader: REPLICA2,
+    };
+
+    pub const BALLOT_7_REPLICA1: Ballot = Ballot {
+        number: 7,
+        leader: REPLICA1,
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::testutil::*;
+    use super::*;
 
     // Test that the Ballot string looks like what we expect.
     #[test]
     fn ballot_string() {
         assert_eq!(
-            ballot_5_replica1().to_string(),
+            BALLOT_5_REPLICA1.to_string(),
             "ballot:5:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         );
     }
@@ -252,14 +175,33 @@ mod tests {
     // Test that ballots are ordered first by their number and then by their leader.
     #[test]
     fn ballot_order() {
-        assert!(ballot_5_replica1() < ballot_6_replica1());
-        assert!(ballot_6_replica1() < ballot_6_replica2());
-        assert!(ballot_6_replica2() < ballot_7_replica1());
+        assert!(BALLOT_5_REPLICA1 < BALLOT_6_REPLICA1);
+        assert!(BALLOT_6_REPLICA1 < BALLOT_6_REPLICA2);
+        assert!(BALLOT_6_REPLICA2 < BALLOT_7_REPLICA1);
+    }
+
+    // Test that the PValue string looks like what we expect.
+    #[test]
+    fn pvalue_string() {
+        let pval = PValue::new(32, BALLOT_5_REPLICA1, String::from("command"));
+        assert_eq!(
+            pval.to_string(),
+            "pvalue:32:5:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        );
     }
 
     // Test that ballots are ordered first by their number and then by their leader.
     #[test]
     fn pvalue_order() {
-        // TODO(rescrv)
+        let pval1 = PValue::new(1, BALLOT_7_REPLICA1, String::from("command7"));
+        let pval2 = PValue::new(2, BALLOT_6_REPLICA2, String::from("command6"));
+        let pval3 = PValue::new(3, BALLOT_6_REPLICA1, String::from("command6"));
+        let pval4 = PValue::new(4, BALLOT_5_REPLICA1, String::from("command5"));
+        let pval5 = PValue::new(5, BALLOT_4_REPLICA1, String::from("command4"));
+
+        assert!(pval1 < pval2);
+        assert!(pval2 < pval3);
+        assert!(pval3 < pval4);
+        assert!(pval4 < pval5);
     }
 }

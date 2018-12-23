@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write;
-use std::collections::HashMap;
 
 use rand;
 use rand::rngs::EntropyRng;
@@ -36,12 +36,18 @@ fn encode_id(id: &[u8; ID_BYTES]) -> String {
 }
 
 // GroupID uniquely identifies a Paxos ensemble.
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct GroupID {
     id: [u8; ID_BYTES],
 }
 
 impl GroupID {
+    pub fn bottom() -> GroupID {
+        GroupID {
+            id: [0; ID_BYTES],
+        }
+    }
+
     pub fn generate() -> Result<GroupID, rand::Error> {
         let id = gen_id();
         match id {
@@ -62,12 +68,18 @@ impl fmt::Display for GroupID {
 }
 
 // ReplicaID represents a single replica in the Paxos ensemble.
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct ReplicaID {
     id: [u8; ID_BYTES],
 }
 
 impl ReplicaID {
+    pub fn bottom() -> ReplicaID {
+        ReplicaID {
+            id: [0; ID_BYTES],
+        }
+    }
+
     pub fn generate() -> Result<ReplicaID, rand::Error> {
         let id = gen_id();
         match id {
@@ -109,12 +121,12 @@ pub struct Configuration {
 
 impl Configuration {
     pub fn bootstrap(
-        group: &GroupID,
+        group: GroupID,
         replicas: &[ReplicaID],
         shadows: &[ReplicaID],
     ) -> Configuration {
         Configuration {
-            group: group.clone(),
+            group: group,
             epoch: 1,
             slot: 1,
             alpha: DEFAULT_ALPHA,
@@ -125,7 +137,7 @@ impl Configuration {
 
     pub fn reconfigure(self) -> Reconfiguration {
         let alpha = self.alpha;
-        Reconfiguration{
+        Reconfiguration {
             config: self,
             alpha,
         }
@@ -210,7 +222,10 @@ impl Reconfiguration {
     // * The slot parameter must be at least as great as the present configuration's start slot
     //   plus its original alpha value.
     pub fn commit(mut self, slot: u64) -> Configuration {
-        assert!(self.config.slot + self.alpha <= slot, "alpha window size not respected");
+        assert!(
+            self.config.slot + self.alpha <= slot,
+            "alpha window size not respected"
+        );
         self.config.epoch += 1;
         self.config.slot = slot;
         self.config
@@ -240,7 +255,8 @@ impl<'a, S> QuorumTracker<'a, S> {
 
     pub fn add(&mut self, member: &ReplicaID, state: S) {
         if !self.is_follower(member) {
-            self.followers.insert(self.config.member_reference(member), state);
+            self.followers
+                .insert(self.config.member_reference(member), state);
         }
     }
 
@@ -374,14 +390,14 @@ mod tests {
     // Test that the first config has epoch=1
     #[test]
     fn first_epoch() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         assert_eq!(config.epoch(), 1);
     }
 
     // Test that is replica returns true for every replica and false for every shadow.
     #[test]
     fn config_is_star() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
 
         assert!(config.is_member(&REPLICA1));
         assert!(config.is_member(&REPLICA2));
@@ -405,7 +421,7 @@ mod tests {
     // Test that membership iteration works
     #[test]
     fn iter_members() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let mut iter = config.members();
         assert_eq!(iter.next(), Some(&REPLICA1));
         assert_eq!(iter.next(), Some(&REPLICA2));
@@ -418,7 +434,7 @@ mod tests {
     // Test that replica iteration works
     #[test]
     fn iter_replicas() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let mut iter = config.replicas();
         assert_eq!(iter.next(), Some(&REPLICA1));
         assert_eq!(iter.next(), Some(&REPLICA2));
@@ -429,7 +445,7 @@ mod tests {
     // Test that shadow iteration works
     #[test]
     fn iter_shadows() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let mut iter = config.shadows();
         assert_eq!(iter.next(), Some(&REPLICA4));
         assert_eq!(iter.next(), Some(&REPLICA5));
@@ -439,7 +455,7 @@ mod tests {
     // Test that quorum computation works and excludes shadows
     #[test]
     fn quorum_computation_three_replicas() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         // all nodes form a quorum
         assert!(config.has_quorum(&|r| -> bool {
             match r {
@@ -483,7 +499,7 @@ mod tests {
     // Test quorums with five nodes
     #[test]
     fn quorum_computation_five_replicas() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         // all nodes form a quorum
         assert!(config.has_quorum(&|r| -> bool {
             match r {
@@ -522,7 +538,7 @@ mod tests {
     // Test that quorum object works and excludes shadows
     #[test]
     fn quorum_object_three_replicas() {
-        let config = Configuration::bootstrap(&GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
+        let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let mut quorum: QuorumTracker<()> = QuorumTracker::new(&config);
 
         // None is not a quorum.
@@ -545,7 +561,7 @@ mod tests {
     // Test quorum objects with five nodes
     #[test]
     fn quorum_object_five_replicas() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         let mut quorum: QuorumTracker<()> = QuorumTracker::new(&config);
 
         // Two is not a quorum.
@@ -565,7 +581,7 @@ mod tests {
     // Test reconfigure increments epoch
     #[test]
     fn reconfigure_epoch() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         let config = config.reconfigure();
         let config = config.commit(1 + DEFAULT_ALPHA);
         assert!(config.epoch() == 2);
@@ -575,7 +591,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn reconfigure_respects_alpha() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         let config = config.reconfigure();
         config.commit(DEFAULT_ALPHA);
     }
@@ -583,7 +599,7 @@ mod tests {
     // Test reconfigure alpha
     #[test]
     fn reconfigure_alpha() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         let mut config = config.reconfigure();
         config.set_alpha(1);
         let config = config.commit(1 + DEFAULT_ALPHA);
@@ -594,7 +610,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn reconfigure_alpha_zero() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         let mut config = config.reconfigure();
         config.set_alpha(0);
     }
@@ -603,7 +619,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn reconfigure_alpha_maximum() {
-        let config = Configuration::bootstrap(&GROUP, FIVE_REPLICAS, &[]);
+        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
         let mut config = config.reconfigure();
         config.set_alpha(MAXIMUM_ALPHA + 1);
     }
