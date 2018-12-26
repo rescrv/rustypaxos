@@ -13,10 +13,6 @@ use std::ops::Range;
 
 pub trait Logger {
     fn report_misbehavior(&mut self, m: Misbehavior);
-
-    // stale proposals are possible, but should be minimal in steady state
-    // TODO(rescrv) rename this
-    fn stale_proposal(&mut self, superceded_by: &Ballot);
 }
 
 pub trait Messenger {
@@ -139,20 +135,14 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
                 .report_misbehavior(Misbehavior::NotAReplica(*acceptor));
             return;
         }
-        // If the acceptor's current ballot exceeds our own, we cannot listen to this acceptor.
-        if self.ballot < current {
+        // We expect the ballot to be exactly equal.  Where the current ballot of the acceptor does
+        // not equal this acceptor, we expect whoever owns the proposer to deal with it, possibly
+        // by killing this proposer, rather than passing it downward.
+        if current != self.ballot {
+            self.logger
+                .report_misbehavior(Misbehavior::ProposerWrongBallot(*acceptor, *current));
             return;
         }
-        // Drop this message if it is old and out of date.
-        if current < self.ballot {
-            self.logger.stale_proposal(current);
-            return;
-        }
-        // Protect against future programmers.
-        assert!(
-            current == self.ballot,
-            "we can only proceed if the ballots are equal"
-        );
         // If already accepted, do not go through it again.
         if self.followers.is_follower(acceptor) {
             // TODO(rescrv): might be useful to log this.
@@ -373,23 +363,17 @@ mod tests {
     struct TestLogger {
         // TODO(rescrv): helper functions around this
         misbehaviors: Vec<Misbehavior>,
-
-        lame_duck_superceded_by: Option<Ballot>,
-        last_stale_proposal: Option<Ballot>,
     }
 
     impl TestLogger {
         fn new() -> TestLogger {
             TestLogger {
                 misbehaviors: Vec::new(),
-                lame_duck_superceded_by: None,
-                last_stale_proposal: None,
             }
         }
 
         fn assert_ok(&self) {
-            assert!(self.lame_duck_superceded_by == None);
-            assert!(self.last_stale_proposal == None);
+            assert_eq!(0, self.misbehaviors.len(), "check there was no misbehavior");
         }
     }
 
@@ -420,10 +404,6 @@ mod tests {
     impl Logger for TestLogger {
         fn report_misbehavior(&mut self, m: Misbehavior) {
             self.misbehaviors.push(m);
-        }
-
-        fn stale_proposal(&mut self, stale: &Ballot) {
-            self.last_stale_proposal = Some(*stale);
         }
     }
 
@@ -540,10 +520,6 @@ mod tests {
 
         // Stale second response should not be counted.
         proposer.process_phase_1b_message(&REPLICA2, &BALLOT_4_REPLICA1, &[]);
-        assert_eq!(
-            proposer.logger.last_stale_proposal,
-            Some(BALLOT_4_REPLICA1)
-        );
         assert_eq!(proposer.phase, PaxosPhase::ONE);
     }
 
