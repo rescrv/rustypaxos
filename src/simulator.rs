@@ -1,11 +1,10 @@
 use std::cmp::max;
 
 use rand;
-use rand::rngs::EntropyRng;
 use rand::Rng;
 
-use crate::Command;
 use crate::Ballot;
+use crate::Command;
 use crate::Paxos;
 use crate::ReplicaID;
 
@@ -37,7 +36,7 @@ impl TransitionGenerator {
     fn generate_introduce(&mut self) -> Transition {
         let mut rng = rand::thread_rng();
         let x: u64 = rng.gen();
-        Transition::Introduce(Command{
+        Transition::Introduce(Command {
             command: format!("number={}", x),
         })
     }
@@ -63,9 +62,13 @@ impl TransitionGenerator {
         }
         let x: u64 = rng.gen();
         match x % 4 {
-            0 => { ballot.number -= 1; },
-            1 => { ballot.number += 1; },
-            _ => {},
+            0 => {
+                ballot.number -= 1;
+            }
+            1 => {
+                ballot.number += 1;
+            }
+            _ => {}
         }
         let x: usize = rng.gen();
         ballot.leader = sim.replicas[x % sim.replicas.len()].id();
@@ -84,7 +87,9 @@ impl Simulator {
         Simulator {
             commands: Vec::new(),
             // TODO(rescrv): cleanup
-            replicas: vec!(Paxos::new(ReplicaID::constant(5))),
+            replicas: vec![Paxos::new(ReplicaID::new([
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+            ]))],
         }
     }
 
@@ -106,6 +111,9 @@ impl Simulator {
                 return;
             }
         }
-        panic!("tried to apply {}, but {} is not known", ballot, ballot.leader);
+        panic!(
+            "tried to apply {}, but {} is not known",
+            ballot, ballot.leader
+        );
     }
 }

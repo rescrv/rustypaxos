@@ -7,6 +7,17 @@ use std::fmt;
 
 use crate::configuration::ReplicaID;
 
+pub trait Environment {
+    // Send a phase 1a message to the named acceptor.
+    fn send_phase_1a_message(&self, acceptor: &ReplicaID, ballot: &Ballot);
+    // Send a phase 2a message to the named acceptor.
+    fn send_phase_2a_message(&self, acceptor: &ReplicaID, pval: &PValue);
+
+    // Report some form of misbehavior.
+    // These are hard errors, and each one indicates a problem that should be investigated.
+    fn report_misbehavior(&self, m: Misbehavior);
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum PaxosPhase {
     ONE,
@@ -94,6 +105,7 @@ pub enum Misbehavior {
     Phase1PValueAboveBallot(ReplicaID, Ballot, PValue),
     Phase2WrongBallot(ReplicaID, Ballot, Ballot),
     Phase2LostPValue(ReplicaID, Ballot, u64),
+    ProposerWrongBallot(ReplicaID, Ballot),
 }
 
 #[derive(Eq, PartialEq)]
@@ -103,9 +115,7 @@ pub struct Paxos {
 
 impl Paxos {
     pub fn new(id: ReplicaID) -> Paxos {
-        Paxos {
-            id
-        }
+        Paxos { id }
     }
 
     pub fn id(&self) -> ReplicaID {
@@ -114,16 +124,21 @@ impl Paxos {
 
     // XXX
     pub fn acceptor_ballot(&self) -> Ballot {
-        Ballot{number: 1, leader: self.id}
+        Ballot {
+            number: 1,
+            leader: self.id,
+        }
     }
 
     // XXX
     pub fn proposer_ballot(&self) -> Ballot {
-        Ballot{number: 1, leader: self.id}
+        Ballot {
+            number: 1,
+            leader: self.id,
+        }
     }
 
-    pub fn start_proposer(&mut self, ballot: &Ballot) {
-    }
+    pub fn start_proposer(&mut self, ballot: &Ballot) {}
 }
 
 #[cfg(test)]

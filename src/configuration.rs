@@ -43,9 +43,11 @@ pub struct GroupID {
 
 impl GroupID {
     pub fn bottom() -> GroupID {
-        GroupID {
-            id: [0; ID_BYTES],
-        }
+        GroupID { id: [0; ID_BYTES] }
+    }
+
+    pub fn new(id: [u8; ID_BYTES]) -> GroupID {
+        GroupID { id }
     }
 
     pub fn generate() -> Result<GroupID, rand::Error> {
@@ -75,9 +77,11 @@ pub struct ReplicaID {
 
 impl ReplicaID {
     pub fn bottom() -> ReplicaID {
-        ReplicaID {
-            id: [0; ID_BYTES],
-        }
+        ReplicaID { id: [0; ID_BYTES] }
+    }
+
+    pub fn new(id: [u8; ID_BYTES]) -> ReplicaID {
+        ReplicaID { id }
     }
 
     pub fn generate() -> Result<ReplicaID, rand::Error> {
