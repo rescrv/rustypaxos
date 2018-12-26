@@ -14,10 +14,6 @@ use std::ops::Range;
 pub trait Logger {
     fn report_misbehavior(&mut self, m: Misbehavior);
 
-    // TODO(rescrv): kill lame duck
-    // transitioning to lame duck
-    fn become_lame_duck(&mut self, superceded_by: &Ballot);
-
     // stale proposals are possible, but should be minimal in steady state
     // TODO(rescrv) rename this
     fn stale_proposal(&mut self, superceded_by: &Ballot);
@@ -39,10 +35,6 @@ pub struct Proposer<'a, L: Logger, M: Messenger> {
     // The Messenger over which outbound communication will be sent
     messenger: &'a mut M,
 
-    // Is this proposer a lame_duck now because another higher ballot is floating around?
-    // Note that this proposer technically doesn't have to even acknowledge this and the protocol
-    // should still be safe because that's the point of Paxos.
-    is_lame_duck: bool,
     // Phase of paxos in which this proposer believes itself to be.
     phase: PaxosPhase,
     // Acceptors that follow this proposer.
@@ -69,7 +61,6 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
             ballot,
             logger,
             messenger,
-            is_lame_duck: false,
             phase: PaxosPhase::ONE,
             followers: QuorumTracker::new(config),
             proposals: HashMap::new(),
@@ -81,12 +72,6 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
 
     // Add a command to be proposed.
     pub fn enqueue_command(&mut self, cmd: Command) {
-        // Protection against misuse by owner
-        if self.is_lame_duck {
-            self.logger
-                .report_misbehavior(Misbehavior::ProposerInLameDuck);
-            return;
-        }
         // Enqueue the command and then shift commands to the proposals.
         self.commands.push_back(cmd);
         if self.phase == PaxosPhase::TWO && (self.proposals.len() as u64) < self.config.alpha() {
@@ -131,12 +116,6 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
 
     // Take actions that would make progress on this ballot in all phases.
     pub fn make_progress(&mut self) {
-        // Protection against misuse by owner
-        if self.is_lame_duck {
-            self.logger
-                .report_misbehavior(Misbehavior::ProposerInLameDuck);
-            return;
-        }
         // Send phase one messages to replicas we haven't had join our quorum.
         for replica in self.followers.waiting_for() {
             self.send_phase_1a_message(replica);
@@ -154,22 +133,14 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
         current: &Ballot,
         pvalues: &[PValue],
     ) {
-        // Protection against misuse by owner
-        if self.is_lame_duck {
-            self.logger
-                .report_misbehavior(Misbehavior::ProposerInLameDuck);
-            return;
-        }
         // Provide basic protection against misbehaving servers participating in the protocol.
         if !self.config.is_member(acceptor) {
             self.logger
                 .report_misbehavior(Misbehavior::NotAReplica(*acceptor));
             return;
         }
-        // Become a lame duck if this proposer has been superceded.
+        // If the acceptor's current ballot exceeds our own, we cannot listen to this acceptor.
         if self.ballot < current {
-            self.is_lame_duck = true;
-            self.logger.become_lame_duck(current);
             return;
         }
         // Drop this message if it is old and out of date.
@@ -260,12 +231,6 @@ impl<'a, L: Logger, M: Messenger> Proposer<'a, L, M> {
 
     // Process receipt of a single phase 2b message.
     pub fn process_phase_2b_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot, slot: u64) {
-        // Protection against misuse by owner
-        if self.is_lame_duck {
-            self.logger
-                .report_misbehavior(Misbehavior::ProposerInLameDuck);
-            return;
-        }
         // Provide basic protection against misbehaving servers participating in the protocol.
         if !self.config.is_member(acceptor) {
             self.logger
@@ -457,10 +422,6 @@ mod tests {
             self.misbehaviors.push(m);
         }
 
-        fn become_lame_duck(&mut self, superceded_by: &Ballot) {
-            self.lame_duck_superceded_by = Some(*superceded_by);
-        }
-
         fn stale_proposal(&mut self, stale: &Ballot) {
             self.last_stale_proposal = Some(*stale);
         }
@@ -532,59 +493,6 @@ mod tests {
         proposer.logger.assert_ok();
         assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
-    }
-
-    // Test that proposer will enter into lame duck and self-enforce lame duck.
-    #[test]
-    fn lame_duck() {
-        let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
-        let ballot = BALLOT_5_REPLICA1;
-        let mut logger = TestLogger::new();
-        let mut messenger = TestMessenger::new();
-        let mut proposer = Proposer::new(&config, &ballot, &mut logger, &mut messenger);
-
-        // Seeing a higher ballot in phase one will cause it to lame-duck itself.
-        proposer.process_phase_1b_message(&REPLICA1, &BALLOT_6_REPLICA1, &[]);
-        assert_eq!(
-            proposer.logger.lame_duck_superceded_by,
-            Some(BALLOT_6_REPLICA1)
-        );
-        proposer.logger.lame_duck_superceded_by = None;
-        proposer.logger.assert_ok();
-
-        // Which means that if we try to make progress it will error out with a lame duck error
-        proposer.make_progress();
-        assert_eq!(
-            proposer.logger.misbehaviors[0],
-            Misbehavior::ProposerInLameDuck
-        );
-        proposer.logger.misbehaviors.clear();
-
-        // And subsequent phase one responses will get dropped.
-        proposer.process_phase_1b_message(&REPLICA2, &ballot, &[]);
-        assert_eq!(
-            proposer.logger.misbehaviors[0],
-            Misbehavior::ProposerInLameDuck
-        );
-        proposer.logger.misbehaviors.clear();
-
-        // As will phase two response.
-        proposer.process_phase_2b_message(&REPLICA1, &ballot, 1);
-        assert_eq!(
-            proposer.logger.misbehaviors[0],
-            Misbehavior::ProposerInLameDuck
-        );
-        proposer.logger.misbehaviors.clear();
-
-        // And of course that means no more proposals
-        proposer.enqueue_command(Command {
-            command: String::from("command"),
-        });
-        assert_eq!(
-            proposer.logger.misbehaviors[0],
-            Misbehavior::ProposerInLameDuck
-        );
-        proposer.logger.misbehaviors.clear();
     }
 
     // Test that an acceptor that's not part of the ensemble cannot accept.
