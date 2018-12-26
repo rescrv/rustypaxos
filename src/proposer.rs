@@ -357,8 +357,8 @@ impl<'a> PValueState<'a> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::rc::Rc;
     use std::fmt::Debug;
+    use std::rc::Rc;
 
     use super::*;
     use crate::configuration::DEFAULT_ALPHA;
@@ -424,11 +424,15 @@ mod tests {
 
     impl Messenger for TestMessenger {
         fn send_phase_1a_message(&self, acceptor: &ReplicaID, ballot: &Ballot) {
-            self.phase_1a_messages.borrow_mut().push((*acceptor, *ballot));
+            self.phase_1a_messages
+                .borrow_mut()
+                .push((*acceptor, *ballot));
         }
 
         fn send_phase_2a_message(&self, acceptor: &ReplicaID, pval: &PValue) {
-            self.phase_2a_messages.borrow_mut().push((*acceptor, pval.clone()));
+            self.phase_2a_messages
+                .borrow_mut()
+                .push((*acceptor, pval.clone()));
         }
     }
 
