@@ -1,3 +1,8 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::ops::Range;
+
 use super::configuration::Configuration;
 use super::configuration::QuorumTracker;
 use super::configuration::ReplicaID;
@@ -6,18 +11,14 @@ use super::Command;
 use super::Misbehavior;
 use super::PValue;
 use super::PaxosPhase;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::ops::Range;
 
 pub trait Logger {
     fn report_misbehavior(&mut self, m: Misbehavior);
 }
 
 pub trait Messenger {
-    fn send_phase_1a_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot);
-    fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue);
+    fn send_phase_1a_message(&self, acceptor: &ReplicaID, ballot: &Ballot);
+    fn send_phase_2a_message(&self, acceptor: &ReplicaID, pval: &PValue);
 }
 
 pub struct Proposer<'a, L: Logger, M: Messenger> {
@@ -355,6 +356,10 @@ impl<'a> PValueState<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::fmt::Debug;
+
     use super::*;
     use crate::configuration::DEFAULT_ALPHA;
     use crate::testutil::*;
@@ -378,26 +383,52 @@ mod tests {
     }
 
     struct TestMessenger {
-        phase_1a_messages: Vec<(ReplicaID, Ballot)>,
-        phase_2a_messages: Vec<(ReplicaID, PValue)>,
+        phase_1a_messages: Rc<RefCell<Vec<(ReplicaID, Ballot)>>>,
+        phase_2a_messages: Rc<RefCell<Vec<(ReplicaID, PValue)>>>,
     }
 
     impl TestMessenger {
         fn new() -> TestMessenger {
             TestMessenger {
-                phase_1a_messages: Vec::new(),
-                phase_2a_messages: Vec::new(),
+                phase_1a_messages: Rc::new(RefCell::new(Vec::new())),
+                phase_2a_messages: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn clear_phase_1a_messages(&self) {
+            self.phase_1a_messages.borrow_mut().clear();
+        }
+
+        fn assert_phase_1a_messages(&self, expect: &[(ReplicaID, Ballot)]) {
+            self.assert_messages(expect, &mut self.phase_1a_messages.borrow_mut());
+        }
+
+        fn clear_phase_2a_messages(&self) {
+            self.phase_2a_messages.borrow_mut().clear();
+        }
+
+        fn assert_phase_2a_messages(&self, expect: &[(ReplicaID, PValue)]) {
+            self.assert_messages(expect, &mut self.phase_2a_messages.borrow_mut());
+        }
+
+        fn assert_messages<M: Ord + Debug + Clone>(&self, expect: &[M], messages: &mut Vec<M>) {
+            assert_eq!(messages.len(), expect.len());
+            let mut expect = expect.to_vec();
+            expect.sort();
+            messages.sort();
+            for i in 0..expect.len() {
+                assert_eq!(messages[i], expect[i]);
             }
         }
     }
 
     impl Messenger for TestMessenger {
-        fn send_phase_1a_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot) {
-            self.phase_1a_messages.push((*acceptor, *ballot));
+        fn send_phase_1a_message(&self, acceptor: &ReplicaID, ballot: &Ballot) {
+            self.phase_1a_messages.borrow_mut().push((*acceptor, *ballot));
         }
 
-        fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue) {
-            self.phase_2a_messages.push((*acceptor, pval.clone()));
+        fn send_phase_2a_message(&self, acceptor: &ReplicaID, pval: &PValue) {
+            self.phase_2a_messages.borrow_mut().push((*acceptor, pval.clone()));
         }
     }
 
@@ -686,22 +717,24 @@ mod tests {
 
         // At first, we must message everyone to make progress.
         proposer.make_progress();
-        assert_eq!(proposer.messenger.phase_1a_messages.len(), 5);
-        assert_eq!(proposer.messenger.phase_1a_messages[0], (REPLICA1, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[1], (REPLICA2, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[2], (REPLICA3, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[3], (REPLICA4, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[4], (REPLICA5, ballot));
+        proposer.messenger.assert_phase_1a_messages(&[
+            (REPLICA1, ballot),
+            (REPLICA2, ballot),
+            (REPLICA3, ballot),
+            (REPLICA4, ballot),
+            (REPLICA5, ballot),
+        ]);
 
         // If we were to get a response from REPLICA3, we should not pester it again.
-        proposer.messenger.phase_1a_messages.clear();
+        proposer.messenger.clear_phase_1a_messages();
         proposer.process_phase_1b_message(&REPLICA3, &ballot, &[]);
         proposer.make_progress();
-        assert_eq!(proposer.messenger.phase_1a_messages.len(), 4);
-        assert_eq!(proposer.messenger.phase_1a_messages[0], (REPLICA1, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[1], (REPLICA2, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[2], (REPLICA4, ballot));
-        assert_eq!(proposer.messenger.phase_1a_messages[3], (REPLICA5, ballot));
+        proposer.messenger.assert_phase_1a_messages(&[
+            (REPLICA1, ballot),
+            (REPLICA2, ballot),
+            (REPLICA4, ballot),
+            (REPLICA5, ballot),
+        ]);
     }
 
     // Test that the proposer discards values outside the slots it was chosen for.
@@ -888,61 +921,28 @@ mod tests {
         proposer.make_progress_phase_two();
 
         // check that the messages were sent
-        proposer.messenger.phase_2a_messages.sort();
-        assert_eq!(proposer.messenger.phase_2a_messages.len(), 6);
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[0],
+        proposer.messenger.assert_phase_2a_messages(&[
             (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[1],
             (REPLICA1, PValue::new(2, ballot, cmd2.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[2],
             (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[3],
             (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[4],
             (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[5],
             (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
-        );
+        ]);
 
         // Replica one responds to pvalue for slot two.
-        proposer.messenger.phase_2a_messages.clear();
+        proposer.messenger.clear_phase_2a_messages();
         proposer.process_phase_2b_message(&REPLICA1, &ballot, 2);
         proposer.make_progress_phase_two();
 
         // check that the messages were re-sent
-        proposer.messenger.phase_2a_messages.sort();
-        assert_eq!(proposer.messenger.phase_2a_messages.len(), 5);
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[0],
+        proposer.messenger.assert_phase_2a_messages(&[
             (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[1],
             (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[2],
             (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[3],
             (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
-        );
-        assert_eq!(
-            proposer.messenger.phase_2a_messages[4],
             (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
-        );
+        ]);
     }
 
     // TODO:
