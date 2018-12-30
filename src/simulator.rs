@@ -76,7 +76,6 @@ impl TransitionGenerator {
     }
 }
 
-#[derive(Eq, PartialEq)]
 pub struct Simulator {
     commands: Vec<Command>,
     replicas: Vec<Paxos>,

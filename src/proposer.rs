@@ -14,14 +14,12 @@ use super::Misbehavior;
 use super::PValue;
 use super::PaxosPhase;
 
-pub struct Proposer<'a> {
+pub struct Proposer {
     // The configuration under which this proposer operates.  Proposers will not operate under
     // different configs; they will die and a new one will rise in their place.
     config: rc::Rc<Configuration>,
     // The Ballot which this proposer is shepherding forward.
-    ballot: &'a Ballot,
-    // The proposer's link to I/O with the rest of the system.
-    env: &'a Environment,
+    ballot: Ballot,
 
     // Phase of paxos in which this proposer believes itself to be.
     phase: PaxosPhase,
@@ -37,16 +35,11 @@ pub struct Proposer<'a> {
 }
 
 // A Proposer drives a single ballot from being unused to being superceded.
-impl<'a> Proposer<'a> {
-    pub fn new(
-        config: &rc::Rc<Configuration>,
-        ballot: &'a Ballot,
-        env: &'a Environment,
-    ) -> Proposer<'a> {
+impl Proposer {
+    pub fn new(config: &rc::Rc<Configuration>, ballot: Ballot) -> Proposer {
         Proposer {
             config: config.clone(),
             ballot,
-            env,
             phase: PaxosPhase::ONE,
             followers: QuorumTracker::new(config.clone()),
             proposals: HashMap::new(),
@@ -101,36 +94,35 @@ impl<'a> Proposer<'a> {
     }
 
     // Take actions that would make progress on this ballot in all phases.
-    pub fn make_progress(&mut self) {
+    pub fn make_progress(&mut self, env: &mut Environment) {
         // Send phase one messages to replicas we haven't had join our quorum.
         for replica in self.followers.waiting_for() {
-            self.send_phase_1a_message(&replica);
+            self.send_phase_1a_message(env, &replica);
         }
         // If in phase two, do the work for phase two.
         if self.phase == PaxosPhase::TWO {
-            self.make_progress_phase_two();
+            self.make_progress_phase_two(env);
         }
     }
 
     // Process receipt of a single phase 1b message.
     pub fn process_phase_1b_message(
         &mut self,
+        env: &mut Environment,
         acceptor: &ReplicaID,
         current: &Ballot,
         pvalues: &[PValue],
     ) {
         // Provide basic protection against misbehaving servers participating in the protocol.
         if !self.config.is_member(acceptor) {
-            self.env
-                .report_misbehavior(Misbehavior::NotAReplica(*acceptor));
+            env.report_misbehavior(Misbehavior::NotAReplica(*acceptor));
             return;
         }
         // We expect the ballot to be exactly equal.  Where the current ballot of the acceptor does
         // not equal this acceptor, we expect whoever owns the proposer to deal with it, possibly
         // by killing this proposer, rather than passing it downward.
-        if current != self.ballot {
-            self.env
-                .report_misbehavior(Misbehavior::ProposerWrongBallot(*acceptor, *current));
+        if *current != self.ballot {
+            env.report_misbehavior(Misbehavior::ProposerWrongBallot(*acceptor, *current));
             return;
         }
         // If already accepted, do not go through it again.
@@ -141,12 +133,11 @@ impl<'a> Proposer<'a> {
         let mut state = FollowerState::new(self.lower_slot);
         // Validate that all pvalues from the acceptor are less than the current acceptor's ballot.
         for pval in pvalues {
-            if self.ballot < &pval.ballot {
+            if self.ballot < pval.ballot {
                 // TODO(rescrv): write a test for this.
-                self.env
-                    .report_misbehavior(Misbehavior::Phase1PValueAboveBallot(
+                env.report_misbehavior(Misbehavior::Phase1PValueAboveBallot(
                         *acceptor,
-                        *self.ballot,
+                        self.ballot,
                         pval.clone(),
                     ));
                 return;
@@ -181,7 +172,7 @@ impl<'a> Proposer<'a> {
                         if entry.get().pval.ballot == pval.ballot
                             && entry.get().pval.command != pval.command
                         {
-                            self.env.report_misbehavior(Misbehavior::PValueConflict(
+                            env.report_misbehavior(Misbehavior::PValueConflict(
                                 entry.get().pval.clone(),
                                 pval.clone(),
                             ));
@@ -204,25 +195,30 @@ impl<'a> Proposer<'a> {
             if self.followers.has_quorum() {
                 self.phase = PaxosPhase::TWO;
                 self.bind_commands_to_slots();
-                self.make_progress_phase_two();
+                self.make_progress_phase_two(env);
             }
         }
     }
 
     // Process receipt of a single phase 2b message.
-    pub fn process_phase_2b_message(&mut self, acceptor: &ReplicaID, ballot: &Ballot, slot: u64) {
+    pub fn process_phase_2b_message(
+        &mut self,
+        env: &mut Environment,
+        acceptor: &ReplicaID,
+        ballot: &Ballot,
+        slot: u64,
+    ) {
         // Provide basic protection against misbehaving servers participating in the protocol.
         if !self.config.is_member(acceptor) {
-            self.env
-                .report_misbehavior(Misbehavior::NotAReplica(*acceptor));
+            env.report_misbehavior(Misbehavior::NotAReplica(*acceptor));
             return;
         }
         // Make sure the other server is responding to the right ballot.
-        if self.ballot != ballot {
+        if self.ballot != *ballot {
             // TODO(rescrv): write a test for this
-            self.env.report_misbehavior(Misbehavior::Phase2WrongBallot(
+            env.report_misbehavior(Misbehavior::Phase2WrongBallot(
                 *acceptor,
-                *self.ballot,
+                self.ballot,
                 *ballot,
             ));
             return;
@@ -230,8 +226,7 @@ impl<'a> Proposer<'a> {
         // Make sure we are in phase two.
         if self.phase != PaxosPhase::TWO {
             // TODO(rescrv): write a test for this
-            self.env
-                .report_misbehavior(Misbehavior::NotInPhase2(*acceptor, *self.ballot));
+            env.report_misbehavior(Misbehavior::NotInPhase2(*acceptor, self.ballot));
             return;
         }
         // Get the pvalue state.
@@ -240,7 +235,7 @@ impl<'a> Proposer<'a> {
             None => {
                 if self.lower_slot <= slot {
                     // TODO(rescrv): write a test for this
-                    self.env.report_misbehavior(Misbehavior::Phase2LostPValue(
+                    env.report_misbehavior(Misbehavior::Phase2LostPValue(
                         *acceptor, *ballot, slot,
                     ));
                 }
@@ -260,7 +255,7 @@ impl<'a> Proposer<'a> {
     }
 
     // Take actions that will make progress for phase two of this ballot.
-    fn make_progress_phase_two(&mut self) {
+    fn make_progress_phase_two(&mut self, env: &mut Environment) {
         assert!(self.phase == PaxosPhase::TWO);
         for slot in self.active_slots() {
             let pval_state = match self.proposals.get_mut(&slot) {
@@ -269,17 +264,22 @@ impl<'a> Proposer<'a> {
             };
             let pval = &pval_state.pval.clone();
             for replica in pval_state.quorum.waiting_for() {
-                self.send_phase_2a_message(&replica, pval);
+                self.send_phase_2a_message(env, &replica, pval);
             }
         }
     }
 
-    fn send_phase_1a_message(&mut self, acceptor: &ReplicaID) {
-        self.env.send_phase_1a_message(acceptor, self.ballot);
+    fn send_phase_1a_message(&mut self, env: &mut Environment, acceptor: &ReplicaID) {
+        env.send_phase_1a_message(acceptor, &self.ballot);
     }
 
-    fn send_phase_2a_message(&mut self, acceptor: &ReplicaID, pval: &PValue) {
-        self.env.send_phase_2a_message(acceptor, pval);
+    fn send_phase_2a_message(
+        &mut self,
+        env: &mut Environment,
+        acceptor: &ReplicaID,
+        pval: &PValue,
+    ) {
+        env.send_phase_2a_message(acceptor, pval);
     }
 
     fn bind_commands_to_slots(&mut self) {
@@ -297,7 +297,7 @@ impl<'a> Proposer<'a> {
                     self.config.clone(),
                     PValue {
                         slot,
-                        ballot: *self.ballot,
+                        ballot: self.ballot,
                         command,
                     },
                 ));
@@ -393,11 +393,11 @@ mod tests {
         }
 
         fn proposer(&self) -> Proposer {
-            Proposer::new(&self.config, &self.ballot, self)
+            Proposer::new(&self.config, self.ballot)
         }
 
-        fn ballot(&self) -> &Ballot {
-            &self.ballot
+        fn ballot(&self) -> Ballot {
+            self.ballot
         }
 
         fn assert_ok(&self) {
@@ -450,23 +450,24 @@ mod tests {
     // Test that three replicas responding to phase one will achieve quorum.
     #[test]
     fn three_replicas_phase_one_no_pvalues() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         // One
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert!(!proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Two makes quorum
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
         env.assert_ok();
         assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         // Three is a bonus
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
@@ -475,35 +476,36 @@ mod tests {
     // Test that five replicas responding to phase one will achieve quorum.
     #[test]
     fn five_replicas_phase_one_no_pvalues() {
-        let env = TestEnvironment::new(GROUP, FIVE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, FIVE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         // One
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert!(!proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Two
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
         env.assert_ok();
         assert!(!proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Three makes quorum
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         // Four is a bonus
-        proposer.process_phase_1b_message(&REPLICA4, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA4, &ballot, &[]);
         env.assert_ok();
         assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         // Five is perfect
-        proposer.process_phase_1b_message(&REPLICA5, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA5, &ballot, &[]);
         env.assert_ok();
         assert!(proposer.followers.has_quorum());
         assert_eq!(proposer.phase, PaxosPhase::TWO);
@@ -513,58 +515,61 @@ mod tests {
     // Replicas one, two, three are included, four is a shadow, and five is excluded.
     #[test]
     fn outside_acceptors_not_allowed() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[REPLICA4], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[REPLICA4], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         // A phase one response from a member should always be good.
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // From a shadow should be good too, but should not advance the phase.
-        proposer.process_phase_1b_message(&REPLICA4, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA4, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // From a non-member should cause misbehaving server error and not advance the phase.
-        proposer.process_phase_1b_message(&REPLICA5, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA5, &ballot, &[]);
         env.assert_misbehaviors(&[Misbehavior::NotAReplica(REPLICA5)]);
     }
 
     // Test that a stale phase one response has zero effect.
     #[test]
     fn stale_phase_one_response() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         // One response.
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Stale second response should not be counted.
-        proposer.process_phase_1b_message(&REPLICA2, &BALLOT_4_REPLICA1, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &BALLOT_4_REPLICA1, &[]);
         assert_eq!(proposer.phase, PaxosPhase::ONE);
     }
 
     // Test that an acceptor cannot sybil their way to having a leader.
     #[test]
     fn double_commitment_to_follow() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         // One
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Can't do that twice
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
 
         // Or three times
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
     }
@@ -576,17 +581,18 @@ mod tests {
         let pval2 = PValue::new(2, BALLOT_6_REPLICA2, String::from("command"));
         let pval3 = PValue::new(3, BALLOT_6_REPLICA2, String::from("command"));
 
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[pval1.clone(), pval2.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[pval1.clone(), pval2.clone()]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
         assert_eq!(proposer.proposals.len(), 2);
         assert_eq!(proposer.peek_slot(1), Some(&pval1));
         assert_eq!(proposer.peek_slot(2), Some(&pval2));
 
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[pval2.clone(), pval3.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[pval2.clone(), pval3.clone()]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 3);
@@ -604,12 +610,13 @@ mod tests {
         let pval3a = PValue::new(3, BALLOT_6_REPLICA1, String::from("command"));
         let pval3b = PValue::new(3, BALLOT_6_REPLICA2, String::from("command"));
 
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(
+        proposer.process_phase_1b_message(&mut env, 
             &REPLICA1,
-            env.ballot(),
+            &ballot,
             &[pval1.clone(), pval2a.clone(), pval3b.clone()],
         );
         env.assert_ok();
@@ -619,9 +626,9 @@ mod tests {
         assert_eq!(proposer.peek_slot(2), Some(&pval2a));
         assert_eq!(proposer.peek_slot(3), Some(&pval3b));
 
-        proposer.process_phase_1b_message(
+        proposer.process_phase_1b_message(&mut env, 
             &REPLICA2,
-            env.ballot(),
+            &ballot,
             &[pval1.clone(), pval2b.clone(), pval3a.clone()],
         );
         env.assert_ok();
@@ -638,16 +645,17 @@ mod tests {
         let pval1a = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
         let pval1b = PValue::new(1, BALLOT_6_REPLICA1, String::from("blue fish"));
 
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[pval1a.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[pval1a.clone()]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
         assert_eq!(proposer.proposals.len(), 1);
         assert_eq!(proposer.peek_slot(1), Some(&pval1a));
 
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[pval1b.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[pval1b.clone()]);
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
         assert_eq!(proposer.peek_slot(1), Some(&pval1b));
@@ -661,17 +669,18 @@ mod tests {
         let pval1a = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
         let pval1b = PValue::new(1, BALLOT_7_REPLICA1, String::from("blue fish"));
 
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[pval1a.clone()]);
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[pval1a.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[pval1a.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[pval1a.clone()]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
         assert_eq!(proposer.peek_slot(1), Some(&pval1a));
 
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[pval1b.clone()]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[pval1b.clone()]);
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 1);
         assert_eq!(proposer.peek_slot(1), Some(&pval1a));
@@ -684,28 +693,29 @@ mod tests {
     // Test that make_progess will send a phase one message to every unaccepted acceptor.
     #[test]
     fn make_progress_sends_phase_one() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS, BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS, BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         // At first, we must message everyone to make progress.
-        proposer.make_progress();
+        proposer.make_progress(&mut env);
         env.assert_phase_1a_messages(&[
-            (REPLICA1, *env.ballot()),
-            (REPLICA2, *env.ballot()),
-            (REPLICA3, *env.ballot()),
-            (REPLICA4, *env.ballot()),
-            (REPLICA5, *env.ballot()),
+            (REPLICA1, ballot),
+            (REPLICA2, ballot),
+            (REPLICA3, ballot),
+            (REPLICA4, ballot),
+            (REPLICA5, ballot),
         ]);
 
         // If we were to get a response from REPLICA3, we should not pester it again.
         env.clear_phase_1a_messages();
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
-        proposer.make_progress();
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
+        proposer.make_progress(&mut env);
         env.assert_phase_1a_messages(&[
-            (REPLICA1, *env.ballot()),
-            (REPLICA2, *env.ballot()),
-            (REPLICA4, *env.ballot()),
-            (REPLICA5, *env.ballot()),
+            (REPLICA1, ballot),
+            (REPLICA2, ballot),
+            (REPLICA4, ballot),
+            (REPLICA5, ballot),
         ]);
     }
 
@@ -716,10 +726,11 @@ mod tests {
         let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let config = config.reconfigure();
         let config = config.commit(128);
-        let env = TestEnvironment::from_config(config, BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::from_config(config, BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[pval]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[pval]);
         assert_eq!(proposer.proposals.len(), 0);
     }
 
@@ -746,12 +757,13 @@ mod tests {
     // Test the sliding window for enqueued commands.
     #[test]
     fn sliding_window_over_commands() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
@@ -796,8 +808,9 @@ mod tests {
     // Test that commands get enqueued on transition to phase two.
     #[test]
     fn enqueue_prior_to_phase_two() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
         for i in 0..7 {
             proposer.enqueue_command(Command {
@@ -807,9 +820,9 @@ mod tests {
             assert_eq!(proposer.commands.len(), (i + 1) as usize);
         }
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 7);
@@ -818,12 +831,13 @@ mod tests {
     // Test the sliding window stops enqueuing at the stop slot.
     #[test]
     fn sliding_window_stop_at_slot() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
@@ -853,12 +867,13 @@ mod tests {
     // Test that phase two sends messages with pvalues.
     #[test]
     fn make_progress_sends_phase_two() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
+        let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&REPLICA1, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA2, env.ballot(), &[]);
-        proposer.process_phase_1b_message(&REPLICA3, env.ballot(), &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
@@ -870,30 +885,30 @@ mod tests {
         proposer.enqueue_command(Command {
             command: cmd2.clone(),
         });
-        proposer.make_progress_phase_two();
+        proposer.make_progress_phase_two(&mut env);
 
         // check that the messages were sent
         env.assert_phase_2a_messages(&[
-            (REPLICA1, PValue::new(1, *env.ballot(), cmd1.clone())),
-            (REPLICA1, PValue::new(2, *env.ballot(), cmd2.clone())),
-            (REPLICA2, PValue::new(1, *env.ballot(), cmd1.clone())),
-            (REPLICA2, PValue::new(2, *env.ballot(), cmd2.clone())),
-            (REPLICA3, PValue::new(1, *env.ballot(), cmd1.clone())),
-            (REPLICA3, PValue::new(2, *env.ballot(), cmd2.clone())),
+            (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA1, PValue::new(2, ballot, cmd2.clone())),
+            (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
+            (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
         ]);
 
         // Replica one responds to pvalue for slot two.
         env.clear_phase_2a_messages();
-        proposer.process_phase_2b_message(&REPLICA1, env.ballot(), 2);
-        proposer.make_progress_phase_two();
+        proposer.process_phase_2b_message(&mut env, &REPLICA1, &ballot, 2);
+        proposer.make_progress_phase_two(&mut env);
 
         // check that the messages were re-sent
         env.assert_phase_2a_messages(&[
-            (REPLICA1, PValue::new(1, *env.ballot(), cmd1.clone())),
-            (REPLICA2, PValue::new(1, *env.ballot(), cmd1.clone())),
-            (REPLICA2, PValue::new(2, *env.ballot(), cmd2.clone())),
-            (REPLICA3, PValue::new(1, *env.ballot(), cmd1.clone())),
-            (REPLICA3, PValue::new(2, *env.ballot(), cmd2.clone())),
+            (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
+            (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
         ]);
     }
 
