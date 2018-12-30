@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write;
+use std::rc;
 
 use rand;
 use rand::rngs::EntropyRng;
@@ -128,21 +129,22 @@ impl Configuration {
         group: GroupID,
         replicas: &[ReplicaID],
         shadows: &[ReplicaID],
-    ) -> Configuration {
-        Configuration {
+    ) -> rc::Rc<Configuration> {
+        let c = rc::Rc::new(Configuration {
             group: group,
             epoch: 1,
             slot: 1,
             alpha: DEFAULT_ALPHA,
             replicas: replicas.to_vec(),
             shadows: shadows.to_vec(),
-        }
+        });
+        c
     }
 
-    pub fn reconfigure(self) -> Reconfiguration {
+    pub fn reconfigure(&self) -> Reconfiguration {
         let alpha = self.alpha;
         Reconfiguration {
-            config: self,
+            config: self.clone(),
             alpha,
         }
     }
@@ -173,20 +175,6 @@ impl Configuration {
 
     pub fn is_shadow(&self, shadow: &ReplicaID) -> bool {
         self.shadows.iter().any(|s| s == shadow)
-    }
-
-    pub fn member_reference(&self, member: &ReplicaID) -> &ReplicaID {
-        for i in 0..self.replicas.len() {
-            if self.replicas[i] == *member {
-                return &self.replicas[i];
-            }
-        }
-        for i in 0..self.shadows.len() {
-            if self.shadows[i] == *member {
-                return &self.shadows[i];
-            }
-        }
-        panic!("cannot call get_acceptor(A) when !is_acceptor(A)")
     }
 
     pub fn members(&self) -> impl Iterator<Item = &ReplicaID> {
@@ -225,14 +213,14 @@ impl Reconfiguration {
     //
     // * The slot parameter must be at least as great as the present configuration's start slot
     //   plus its original alpha value.
-    pub fn commit(mut self, slot: u64) -> Configuration {
+    pub fn commit(mut self, slot: u64) -> rc::Rc<Configuration> {
         assert!(
             self.config.slot + self.alpha <= slot,
             "alpha window size not respected"
         );
         self.config.epoch += 1;
         self.config.slot = slot;
-        self.config
+        rc::Rc::new(self.config)
     }
 
     pub fn set_alpha(&mut self, alpha: u64) -> &mut Reconfiguration {
@@ -244,13 +232,13 @@ impl Reconfiguration {
 
 // Track a quorum of the Paxos ensemble.
 #[derive(Debug)]
-pub struct QuorumTracker<'a, S> {
-    config: &'a Configuration,
-    followers: HashMap<&'a ReplicaID, S>,
+pub struct QuorumTracker<S> {
+    config: rc::Rc<Configuration>,
+    followers: HashMap<ReplicaID, S>,
 }
 
-impl<'a, S> QuorumTracker<'a, S> {
-    pub fn new(config: &'a Configuration) -> QuorumTracker<'a, S> {
+impl<S> QuorumTracker<S> {
+    pub fn new(config: rc::Rc<Configuration>) -> QuorumTracker<S> {
         QuorumTracker {
             config,
             followers: HashMap::new(),
@@ -260,7 +248,7 @@ impl<'a, S> QuorumTracker<'a, S> {
     pub fn add(&mut self, member: &ReplicaID, state: S) {
         if !self.is_follower(member) {
             self.followers
-                .insert(self.config.member_reference(member), state);
+                .insert(*member,  state);
         }
     }
 
@@ -268,15 +256,15 @@ impl<'a, S> QuorumTracker<'a, S> {
         self.followers.contains_key(member)
     }
 
-    pub fn waiting_for(&self) -> Vec<&'a ReplicaID> {
-        let mut nf = Vec::new();
-        for replica in self.config.replicas() {
-            if !self.is_follower(replica) {
+    pub fn waiting_for(&self) -> Vec<ReplicaID> {
+        let mut nf: Vec<ReplicaID> = Vec::new();
+        for &replica in self.config.replicas() {
+            if !self.is_follower(&replica) {
                 nf.push(replica);
             }
         }
-        for shadow in self.config.shadows() {
-            if !self.is_follower(shadow) {
+        for &shadow in self.config.shadows() {
+            if !self.is_follower(&shadow) {
                 nf.push(shadow);
             }
         }
@@ -543,7 +531,7 @@ mod tests {
     #[test]
     fn quorum_object_three_replicas() {
         let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
-        let mut quorum: QuorumTracker<()> = QuorumTracker::new(&config);
+        let mut quorum: QuorumTracker<()> = QuorumTracker::new(config);
 
         // None is not a quorum.
         assert!(!quorum.has_quorum());
@@ -566,7 +554,7 @@ mod tests {
     #[test]
     fn quorum_object_five_replicas() {
         let config = Configuration::bootstrap(GROUP, FIVE_REPLICAS, &[]);
-        let mut quorum: QuorumTracker<()> = QuorumTracker::new(&config);
+        let mut quorum: QuorumTracker<()> = QuorumTracker::new(config);
 
         // Two is not a quorum.
         quorum.add(&REPLICA2, ());

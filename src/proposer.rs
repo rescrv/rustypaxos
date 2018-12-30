@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::ops::Range;
+use std::rc;
 
 use super::configuration::Configuration;
 use super::configuration::QuorumTracker;
@@ -16,7 +17,7 @@ use super::PaxosPhase;
 pub struct Proposer<'a> {
     // The configuration under which this proposer operates.  Proposers will not operate under
     // different configs; they will die and a new one will rise in their place.
-    config: &'a Configuration,
+    config: rc::Rc<Configuration>,
     // The Ballot which this proposer is shepherding forward.
     ballot: &'a Ballot,
     // The proposer's link to I/O with the rest of the system.
@@ -25,9 +26,9 @@ pub struct Proposer<'a> {
     // Phase of paxos in which this proposer believes itself to be.
     phase: PaxosPhase,
     // Acceptors that follow this proposer.
-    followers: QuorumTracker<'a, FollowerState>,
+    followers: QuorumTracker<FollowerState>,
     // Values to be proposed and pushed forward by this proposer.
-    proposals: HashMap<u64, PValueState<'a>>,
+    proposals: HashMap<u64, PValueState>,
     // The lower and upper bounds of the range this proposer will push forward.
     lower_slot: u64,
     upper_slot: u64,
@@ -38,16 +39,16 @@ pub struct Proposer<'a> {
 // A Proposer drives a single ballot from being unused to being superceded.
 impl<'a> Proposer<'a> {
     pub fn new(
-        config: &'a Configuration,
+        config: &rc::Rc<Configuration>,
         ballot: &'a Ballot,
         env: &'a Environment,
     ) -> Proposer<'a> {
         Proposer {
-            config,
+            config: config.clone(),
             ballot,
             env,
             phase: PaxosPhase::ONE,
-            followers: QuorumTracker::new(config),
+            followers: QuorumTracker::new(config.clone()),
             proposals: HashMap::new(),
             lower_slot: config.first_valid_slot(),
             upper_slot: u64::max_value(),
@@ -103,7 +104,7 @@ impl<'a> Proposer<'a> {
     pub fn make_progress(&mut self) {
         // Send phase one messages to replicas we haven't had join our quorum.
         for replica in self.followers.waiting_for() {
-            self.send_phase_1a_message(replica);
+            self.send_phase_1a_message(&replica);
         }
         // If in phase two, do the work for phase two.
         if self.phase == PaxosPhase::TWO {
@@ -185,13 +186,13 @@ impl<'a> Proposer<'a> {
                                 pval.clone(),
                             ));
                         }
-                        *entry.get_mut() = PValueState::wrap(self.config, pval.clone());
+                        *entry.get_mut() = PValueState::wrap(self.config.clone(), pval.clone());
                     }
                 }
                 // If there is nothing for this slot yet, the protocol obligates us to use this
                 // provided pvalue.
                 Entry::Vacant(entry) => {
-                    entry.insert(PValueState::wrap(self.config, pval.clone()));
+                    entry.insert(PValueState::wrap(self.config.clone(), pval.clone()));
                 }
             }
         }
@@ -266,10 +267,9 @@ impl<'a> Proposer<'a> {
                 Some(v) => v,
                 None => continue,
             };
-            // TODO(rescrv):  Figure out how to not clone here.
             let pval = &pval_state.pval.clone();
             for replica in pval_state.quorum.waiting_for() {
-                self.send_phase_2a_message(replica, pval);
+                self.send_phase_2a_message(&replica, pval);
             }
         }
     }
@@ -294,7 +294,7 @@ impl<'a> Proposer<'a> {
                     None => return,
                 };
                 entry.insert(PValueState::wrap(
-                    self.config,
+                    self.config.clone(),
                     PValue {
                         slot,
                         ballot: *self.ballot,
@@ -326,13 +326,13 @@ impl FollowerState {
 }
 
 #[derive(Debug)]
-struct PValueState<'a> {
+struct PValueState {
     pval: PValue,
-    quorum: QuorumTracker<'a, ()>,
+    quorum: QuorumTracker<()>,
 }
 
-impl<'a> PValueState<'a> {
-    fn wrap(config: &'a Configuration, pval: PValue) -> PValueState<'a> {
+impl PValueState {
+    fn wrap(config: rc::Rc<Configuration>, pval: PValue) -> PValueState {
         PValueState {
             pval,
             quorum: QuorumTracker::new(config),
@@ -362,7 +362,7 @@ mod tests {
     }
 
     struct TestEnvironment {
-        config: Configuration,
+        config: Rc<Configuration>,
         ballot: Ballot,
 
         misbehaviors: Rc<RefCell<Vec<Misbehavior>>>,
@@ -381,7 +381,7 @@ mod tests {
             TestEnvironment::from_config(config, ballot)
         }
 
-        fn from_config(config: Configuration, ballot: Ballot) -> TestEnvironment {
+        fn from_config(config: Rc<Configuration>, ballot: Ballot) -> TestEnvironment {
             TestEnvironment {
                 config: config,
                 ballot: ballot,
