@@ -5,9 +5,9 @@ use rand::Rng;
 
 use crate::Ballot;
 use crate::Command;
+use crate::GroupID;
 use crate::Paxos;
 use crate::ReplicaID;
-use crate::GroupID;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Transition {
@@ -83,12 +83,8 @@ pub struct Simulator {
 
 impl Simulator {
     pub fn new() -> Simulator {
-        let group = GroupID::new([
-                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            ]);
-        let replica = ReplicaID::new([
-                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-            ]);
+        let group = GroupID::new([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
+        let replica = ReplicaID::new([7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
         Simulator {
             commands: Vec::new(),
             // TODO(rescrv): cleanup

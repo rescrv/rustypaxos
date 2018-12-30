@@ -247,8 +247,7 @@ impl<S> QuorumTracker<S> {
 
     pub fn add(&mut self, member: &ReplicaID, state: S) {
         if !self.is_follower(member) {
-            self.followers
-                .insert(*member,  state);
+            self.followers.insert(*member, state);
         }
     }
 

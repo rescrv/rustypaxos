@@ -136,10 +136,10 @@ impl Proposer {
             if self.ballot < pval.ballot {
                 // TODO(rescrv): write a test for this.
                 env.report_misbehavior(Misbehavior::Phase1PValueAboveBallot(
-                        *acceptor,
-                        self.ballot,
-                        pval.clone(),
-                    ));
+                    *acceptor,
+                    self.ballot,
+                    pval.clone(),
+                ));
                 return;
             }
         }
@@ -235,9 +235,7 @@ impl Proposer {
             None => {
                 if self.lower_slot <= slot {
                     // TODO(rescrv): write a test for this
-                    env.report_misbehavior(Misbehavior::Phase2LostPValue(
-                        *acceptor, *ballot, slot,
-                    ));
+                    env.report_misbehavior(Misbehavior::Phase2LostPValue(*acceptor, *ballot, slot));
                 }
                 return;
             }
@@ -585,14 +583,24 @@ mod tests {
         let mut proposer = env.proposer();
         let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[pval1.clone(), pval2.clone()]);
+        proposer.process_phase_1b_message(
+            &mut env,
+            &REPLICA1,
+            &ballot,
+            &[pval1.clone(), pval2.clone()],
+        );
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::ONE);
         assert_eq!(proposer.proposals.len(), 2);
         assert_eq!(proposer.peek_slot(1), Some(&pval1));
         assert_eq!(proposer.peek_slot(2), Some(&pval2));
 
-        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[pval2.clone(), pval3.clone()]);
+        proposer.process_phase_1b_message(
+            &mut env,
+            &REPLICA2,
+            &ballot,
+            &[pval2.clone(), pval3.clone()],
+        );
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
         assert_eq!(proposer.proposals.len(), 3);
@@ -614,7 +622,8 @@ mod tests {
         let mut proposer = env.proposer();
         let ballot = env.ballot();
 
-        proposer.process_phase_1b_message(&mut env, 
+        proposer.process_phase_1b_message(
+            &mut env,
             &REPLICA1,
             &ballot,
             &[pval1.clone(), pval2a.clone(), pval3b.clone()],
@@ -626,7 +635,8 @@ mod tests {
         assert_eq!(proposer.peek_slot(2), Some(&pval2a));
         assert_eq!(proposer.peek_slot(3), Some(&pval3b));
 
-        proposer.process_phase_1b_message(&mut env, 
+        proposer.process_phase_1b_message(
+            &mut env,
             &REPLICA2,
             &ballot,
             &[pval1.clone(), pval2b.clone(), pval3a.clone()],
@@ -693,7 +703,8 @@ mod tests {
     // Test that make_progess will send a phase one message to every unaccepted acceptor.
     #[test]
     fn make_progress_sends_phase_one() {
-        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS, BALLOT_5_REPLICA1);
+        let mut env =
+            TestEnvironment::new(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS, BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
         let ballot = env.ballot();
 
