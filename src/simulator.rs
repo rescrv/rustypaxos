@@ -7,6 +7,7 @@ use crate::Ballot;
 use crate::Command;
 use crate::Paxos;
 use crate::ReplicaID;
+use crate::GroupID;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Transition {
@@ -45,8 +46,7 @@ impl TransitionGenerator {
         let mut rng = rand::thread_rng();
         let mut ballot = Ballot::bottom();
         for replica in sim.replicas.iter() {
-            ballot = max(ballot, replica.acceptor_ballot());
-            ballot = max(ballot, replica.proposer_ballot());
+            ballot = max(ballot, replica.highest_ballot());
         }
         // ballot holds the highest ballot in the simulator.
         //
@@ -84,12 +84,16 @@ pub struct Simulator {
 
 impl Simulator {
     pub fn new() -> Simulator {
+        let group = GroupID::new([
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+            ]);
+        let replica = ReplicaID::new([
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            ]);
         Simulator {
             commands: Vec::new(),
             // TODO(rescrv): cleanup
-            replicas: vec![Paxos::new(ReplicaID::new([
-                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            ]))],
+            replicas: vec![Paxos::new_cluster(group, replica)],
         }
     }
 

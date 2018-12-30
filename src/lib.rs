@@ -5,7 +5,10 @@ pub mod simulator;
 
 use std::fmt;
 
+use crate::configuration::Configuration;
+use crate::configuration::GroupID;
 use crate::configuration::ReplicaID;
+use crate::proposer::Proposer;
 
 pub trait Environment {
     // Send a phase 1a message to the named acceptor.
@@ -110,12 +113,13 @@ pub enum Misbehavior {
 
 #[derive(Eq, PartialEq)]
 pub struct Paxos {
+    group: GroupID,
     id: ReplicaID,
 }
 
 impl Paxos {
-    pub fn new(id: ReplicaID) -> Paxos {
-        Paxos { id }
+    pub fn new_cluster(group: GroupID, id: ReplicaID) -> Paxos {
+        Paxos { group, id }
     }
 
     pub fn id(&self) -> ReplicaID {
@@ -123,22 +127,22 @@ impl Paxos {
     }
 
     // XXX
-    pub fn acceptor_ballot(&self) -> Ballot {
+    pub fn highest_ballot(&self) -> Ballot {
         Ballot {
             number: 1,
             leader: self.id,
         }
     }
 
-    // XXX
-    pub fn proposer_ballot(&self) -> Ballot {
-        Ballot {
-            number: 1,
-            leader: self.id,
-        }
+    pub fn start_proposer(&mut self, ballot: &Ballot) {
+        /*
+        pub fn new(
+            config: &'a Configuration,
+            ballot: &'a Ballot,
+            env: &'a Environment,
+        ) -> Proposer<'a> {
+        */
     }
-
-    pub fn start_proposer(&mut self, ballot: &Ballot) {}
 }
 
 #[cfg(test)]
