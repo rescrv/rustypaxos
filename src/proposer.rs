@@ -98,7 +98,10 @@ impl Proposer {
     pub fn make_progress(&mut self, env: &mut Environment) {
         // Send phase one messages to replicas we haven't had join our quorum.
         for replica in self.followers.waiting_for() {
-            env.send(Message::Phase1A{acceptor: replica, ballot: self.ballot});
+            env.send(Message::Phase1A {
+                acceptor: replica,
+                ballot: self.ballot,
+            });
         }
         // If in phase two, do the work for phase two.
         if self.phase == PaxosPhase::TWO {
@@ -150,8 +153,7 @@ impl Proposer {
                 // TODO(rescrv): warn if this happens because it is inefficient
                 continue;
             }
-            let v = self.proposals.entry(pval.slot);
-            match v {
+            match self.proposals.entry(pval.slot) {
                 // The acceptor's highest seen pvalue for this slot is less than what we have seen
                 // from another acceptor.  The pvalue should be ignored because a higher ballot
                 // proposed a different value.
@@ -262,7 +264,10 @@ impl Proposer {
                 None => continue,
             };
             for replica in pval_state.quorum.waiting_for() {
-                env.send(Message::Phase2A{acceptor: replica, pval: pval_state.pval.clone()});
+                env.send(Message::Phase2A {
+                    acceptor: replica,
+                    pval: pval_state.pval.clone(),
+                });
             }
         }
     }
@@ -385,11 +390,7 @@ mod tests {
         }
 
         fn assert_ok(&self) {
-            assert_eq!(
-                0,
-                self.misbehaviors.len(),
-                "check there was no misbehavior"
-            );
+            assert_eq!(0, self.misbehaviors.len(), "check there was no misbehavior");
         }
 
         fn assert_misbehaviors(&self, misbehaviors: &[Misbehavior]) {
@@ -416,13 +417,15 @@ mod tests {
     impl Environment for TestEnvironment {
         fn send(&mut self, msg: Message) {
             match msg {
-                Message::Phase1A{acceptor, ballot} => {
+                Message::Phase1A { acceptor, ballot } => {
                     self.phase_1a_messages.push((acceptor, ballot));
-                },
-                Message::Phase2A{acceptor, pval} => {
+                }
+                Message::Phase2A { acceptor, pval } => {
                     self.phase_2a_messages.push((acceptor, pval));
-                },
-                _ => { panic!("unexpected message {:?}", msg); },
+                }
+                _ => {
+                    panic!("unexpected message {:?}", msg);
+                }
             };
         }
 

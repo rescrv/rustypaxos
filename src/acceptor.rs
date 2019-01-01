@@ -1,7 +1,7 @@
+use super::PValue;
 use crate::configuration::ReplicaID;
 use crate::Ballot;
 use crate::Environment;
-use super::PValue;
 
 // An acceptor is the durable memory of the system.  In phase one, the acceptor commits to follow a
 // ballot for a range of slots if and only if no higher ballots have been accepted for those slots.
@@ -50,7 +50,7 @@ impl Acceptor {
         if self.ballots.ballot_for_slot(pval.slot) == pval.ballot {
             // make it durable
             // d = env.persist(phase1b(pval))
-            // a.durable =d 
+            // a.durable =d
             // send phase1b when durable =d
             // self.pvales = append(self.pvalues, pval);
         } else {
@@ -108,7 +108,7 @@ impl BallotTracker {
             // When there is overlap, we can break it down into zero or more of these cases:
             // LOWER:  The existing ab was promised for slots less than start
             if ab.start < start && start < ab.limit {
-                new_ballots.push(ActiveBallot{
+                new_ballots.push(ActiveBallot {
                     ballot: ab.ballot,
                     start: ab.start,
                     limit: start,
@@ -116,7 +116,7 @@ impl BallotTracker {
             }
             // UPPER:  The existing ab was promised for slots greater than limit
             if ab.start <= limit && limit < ab.limit {
-                new_ballots.push(ActiveBallot{
+                new_ballots.push(ActiveBallot {
                     ballot: ab.ballot,
                     start: limit,
                     limit: ab.limit,
@@ -130,10 +130,10 @@ impl BallotTracker {
             // look at the border cases where ab.start approaches start and ab.limit approaches
             // limit to see that they are handled correctly too.
         }
-        new_ballots.push(ActiveBallot{
+        new_ballots.push(ActiveBallot {
             ballot,
             start,
-            limit
+            limit,
         });
         self.ballots = new_ballots;
         true
@@ -151,7 +151,7 @@ impl BallotTracker {
     #[cfg(test)]
     fn ordered_promises(&self) -> Vec<ActiveBallot> {
         let mut ballots = self.ballots.clone();
-        ballots.sort_unstable_by(|lhs, rhs| { lhs.start.cmp(&rhs.start) });
+        ballots.sort_unstable_by(|lhs, rhs| lhs.start.cmp(&rhs.start));
         ballots
     }
 }
@@ -199,9 +199,14 @@ mod tests {
         let mut bt = BallotTracker::new();
         assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
         assert_eq!(BALLOT_5_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 0, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[ActiveBallot {
+                ballot: BALLOT_5_REPLICA1,
+                start: 0,
+                limit: 64,
+            }],
+        );
     }
 
     #[test]
@@ -210,9 +215,14 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
         assert!(bt.maybe_adopt(BALLOT_6_REPLICA1, 0, 64));
         assert_eq!(BALLOT_6_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_6_REPLICA1, start: 0, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[ActiveBallot {
+                ballot: BALLOT_6_REPLICA1,
+                start: 0,
+                limit: 64,
+            }],
+        );
     }
 
     #[test]
@@ -221,9 +231,14 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
         assert!(!bt.maybe_adopt(BALLOT_4_REPLICA1, 0, 64));
         assert_eq!(BALLOT_5_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 0, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[ActiveBallot {
+                ballot: BALLOT_5_REPLICA1,
+                start: 0,
+                limit: 64,
+            }],
+        );
     }
 
     #[test]
@@ -232,10 +247,21 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
         assert!(bt.maybe_adopt(BALLOT_6_REPLICA1, 0, 32));
         assert_eq!(BALLOT_6_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_6_REPLICA1, start: 0, limit: 32},
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 32, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[
+                ActiveBallot {
+                    ballot: BALLOT_6_REPLICA1,
+                    start: 0,
+                    limit: 32,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 32,
+                    limit: 64,
+                },
+            ],
+        );
     }
 
     #[test]
@@ -244,10 +270,21 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
         assert!(bt.maybe_adopt(BALLOT_6_REPLICA1, 32, 64));
         assert_eq!(BALLOT_6_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 0, limit: 32},
-            ActiveBallot{ ballot: BALLOT_6_REPLICA1, start: 32, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 0,
+                    limit: 32,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_6_REPLICA1,
+                    start: 32,
+                    limit: 64,
+                },
+            ],
+        );
     }
 
     #[test]
@@ -256,11 +293,26 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
         assert!(bt.maybe_adopt(BALLOT_6_REPLICA1, 16, 48));
         assert_eq!(BALLOT_6_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 0, limit: 16},
-            ActiveBallot{ ballot: BALLOT_6_REPLICA1, start: 16, limit: 48},
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 48, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 0,
+                    limit: 16,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_6_REPLICA1,
+                    start: 16,
+                    limit: 48,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 48,
+                    limit: 64,
+                },
+            ],
+        );
     }
 
     #[test]
@@ -270,12 +322,31 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_7_REPLICA1, 48, 64));
         assert!(bt.maybe_adopt(BALLOT_6_REPLICA1, 8, 12));
         assert_eq!(BALLOT_7_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 0, limit: 8},
-            ActiveBallot{ ballot: BALLOT_6_REPLICA1, start: 8, limit: 12},
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 12, limit: 48},
-            ActiveBallot{ ballot: BALLOT_7_REPLICA1, start: 48, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 0,
+                    limit: 8,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_6_REPLICA1,
+                    start: 8,
+                    limit: 12,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 12,
+                    limit: 48,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_7_REPLICA1,
+                    start: 48,
+                    limit: 64,
+                },
+            ],
+        );
     }
 
     #[test]
@@ -285,12 +356,31 @@ mod tests {
         assert!(bt.maybe_adopt(BALLOT_6_REPLICA1, 48, 64));
         assert!(bt.maybe_adopt(BALLOT_7_REPLICA1, 8, 12));
         assert_eq!(BALLOT_7_REPLICA1, bt.highest_ballot());
-        check_ordered_promises(&bt, &[
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 0, limit: 8},
-            ActiveBallot{ ballot: BALLOT_7_REPLICA1, start: 8, limit: 12},
-            ActiveBallot{ ballot: BALLOT_5_REPLICA1, start: 12, limit: 48},
-            ActiveBallot{ ballot: BALLOT_6_REPLICA1, start: 48, limit: 64},
-        ]);
+        check_ordered_promises(
+            &bt,
+            &[
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 0,
+                    limit: 8,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_7_REPLICA1,
+                    start: 8,
+                    limit: 12,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_5_REPLICA1,
+                    start: 12,
+                    limit: 48,
+                },
+                ActiveBallot {
+                    ballot: BALLOT_6_REPLICA1,
+                    start: 48,
+                    limit: 64,
+                },
+            ],
+        );
     }
 
     #[test]
@@ -301,7 +391,10 @@ mod tests {
         let mut bt = BallotTracker::new();
         let mut active = [Ballot::BOTTOM; SLOTS];
         for i in 0..ITERS {
-            let b = Ballot{ number: i, leader: ReplicaID::BOTTOM };
+            let b = Ballot {
+                number: i,
+                leader: ReplicaID::BOTTOM,
+            };
             let start = rng.gen_range(0, SLOTS);
             let limit = rng.gen_range(start, SLOTS);
             if start == limit {

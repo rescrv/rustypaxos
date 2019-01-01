@@ -1,7 +1,7 @@
 use std::cmp::max;
-use std::fmt;
 
 use rand;
+use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::Ballot;
@@ -12,7 +12,6 @@ use crate::Message;
 use crate::Misbehavior;
 use crate::Paxos;
 use crate::ReplicaID;
-use crate::PValue;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Transition {
@@ -29,7 +28,7 @@ pub enum Transition {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InFlightMessage {
-    originator: ReplicaID,
+    src: ReplicaID,
     message: Message,
 }
 
@@ -57,7 +56,7 @@ impl TransitionGenerator {
             if t == Transition::NOP {
                 continue;
             }
-            return t
+            return t;
         }
     }
 
@@ -71,7 +70,7 @@ impl TransitionGenerator {
 
     fn generate_start_proposer(&mut self, sim: &Simulator) -> Transition {
         let mut rng = rand::thread_rng();
-        let mut ballot = Ballot::bottom();
+        let mut ballot = Ballot::BOTTOM;
         for replica in sim.replicas.iter() {
             ballot = max(ballot, replica.highest_ballot());
         }
@@ -101,11 +100,38 @@ impl TransitionGenerator {
         ballot.leader = sim.replicas[x % sim.replicas.len()].id();
         Transition::StartProposer(ballot)
     }
+
+    fn generate_deliver_message(&mut self, sim: &Simulator) -> Transition {
+        match self.choose_message(sim) {
+            Some(msg) => Transition::DeliverMessage(msg.clone()),
+            None => Transition::NOP,
+        }
+    }
+
+    fn generate_duplicate_message(&mut self, sim: &Simulator) -> Transition {
+        match self.choose_message(sim) {
+            Some(msg) => Transition::DuplicateMessage(msg.clone()),
+            None => Transition::NOP,
+        }
+    }
+
+    fn generate_drop_message(&mut self, sim: &Simulator) -> Transition {
+        match self.choose_message(sim) {
+            Some(msg) => Transition::DropMessage(msg.clone()),
+            None => Transition::NOP,
+        }
+    }
+
+    fn choose_message<'a>(&mut self, sim: &'a Simulator) -> Option<&'a InFlightMessage> {
+        let mut rng = rand::thread_rng();
+        sim.messages.choose(&mut rng)
+    }
 }
 
 pub struct Simulator {
     commands: Vec<Command>,
     replicas: Vec<Paxos>,
+    messages: Vec<InFlightMessage>,
 }
 
 impl Simulator {
@@ -116,13 +142,21 @@ impl Simulator {
             commands: Vec::new(),
             // TODO(rescrv): cleanup
             replicas: vec![Paxos::new_cluster(group, replica)],
+            messages: Vec::new(),
         }
     }
 
     pub fn apply(&mut self, trans: &Transition) {
         match trans {
+            Transition::NOP => {}
+
             Transition::Introduce(cmd) => self.apply_introduce(cmd),
+
             Transition::StartProposer(ballot) => self.apply_start_proposer(ballot),
+
+            Transition::DeliverMessage(msg) => self.apply_deliver_message(msg),
+            Transition::DuplicateMessage(msg) => self.apply_duplicate_message(msg),
+            Transition::DropMessage(msg) => self.apply_drop_message(msg),
         }
     }
 
@@ -131,15 +165,79 @@ impl Simulator {
     }
 
     fn apply_start_proposer(&mut self, ballot: &Ballot) {
+        let replica = self.get_replica(ballot.leader);
+        let mut env = SimulatorEnvironment::new(replica.id());
+        replica.start_proposer(&mut env, ballot);
+        self.merge(env);
+    }
+
+    fn apply_deliver_message(&mut self, msg: &InFlightMessage) {
+        let replica = self.get_replica(msg.message.intended_recipient());
+        let mut env = SimulatorEnvironment::new(replica.id());
+        replica.process_message(&mut env, msg.src, &msg.message);
+        self.remove_message(msg);
+        self.merge(env);
+    }
+
+    fn apply_duplicate_message(&mut self, msg: &InFlightMessage) {
+        self.messages.push(msg.clone());
+    }
+
+    fn apply_drop_message(&mut self, msg: &InFlightMessage) {
+        self.remove_message(msg);
+    }
+
+    fn get_replica(&mut self, id: ReplicaID) -> &mut Paxos {
         for replica in self.replicas.iter_mut() {
-            if replica.id() == ballot.leader {
-                replica.start_proposer(ballot);
+            if replica.id() == id {
+                return replica;
+            }
+        }
+        panic!("could not get_replica {}", id);
+    }
+
+    fn remove_message(&mut self, msg: &InFlightMessage) {
+        for i in 0..self.messages.len() {
+            if self.messages[i] == *msg {
+                self.messages.swap_remove(i);
                 return;
             }
         }
-        panic!(
-            "tried to apply {}, but {} is not known",
-            ballot, ballot.leader
-        );
+        panic!("tried to remove message {}, but it does not exist");
     }
+
+    fn merge(&mut self, mut env: SimulatorEnvironment) {
+        self.messages.append(&mut env.messages);
+    }
+}
+
+pub fn equivalent(sim1: &Simulator, sim2: &Simulator) -> bool {
+    // TODO(rescrv): obviously not true, but not a priority
+    true
+}
+
+struct SimulatorEnvironment {
+    id: ReplicaID,
+    messages: Vec<InFlightMessage>,
+}
+
+impl SimulatorEnvironment {
+    fn new(id: ReplicaID) -> SimulatorEnvironment {
+        SimulatorEnvironment {
+            id,
+            messages: Vec::new(),
+        }
+    }
+}
+
+impl Environment for SimulatorEnvironment {
+    fn send(&mut self, message: Message) {
+        self.messages.push(InFlightMessage {
+            src: self.id,
+            message,
+        });
+    }
+
+    // TODO(rescrv): make sure this shows up
+    fn report_misbehavior(&mut self, _m: Misbehavior) {}
 }

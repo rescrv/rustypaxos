@@ -43,9 +43,10 @@ pub struct GroupID {
 }
 
 impl GroupID {
-    pub fn bottom() -> GroupID {
-        GroupID { id: [0; ID_BYTES] }
-    }
+    pub const BOTTOM: GroupID = GroupID { id: [0; ID_BYTES] };
+    pub const TOP: GroupID = GroupID {
+        id: [255; ID_BYTES],
+    };
 
     pub fn new(id: [u8; ID_BYTES]) -> GroupID {
         GroupID { id }
@@ -77,9 +78,7 @@ pub struct ReplicaID {
 }
 
 impl ReplicaID {
-    pub fn bottom() -> ReplicaID {
-        ReplicaID { id: [0; ID_BYTES] }
-    }
+    pub const BOTTOM: ReplicaID = ReplicaID { id: [0; ID_BYTES] };
 
     pub fn new(id: [u8; ID_BYTES]) -> ReplicaID {
         ReplicaID { id }
