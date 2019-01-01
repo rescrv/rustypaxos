@@ -1,19 +1,36 @@
 use std::cmp::max;
+use std::fmt;
 
 use rand;
 use rand::Rng;
 
 use crate::Ballot;
 use crate::Command;
+use crate::Environment;
 use crate::GroupID;
+use crate::Message;
+use crate::Misbehavior;
 use crate::Paxos;
 use crate::ReplicaID;
+use crate::PValue;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Transition {
+    NOP,
+
     Introduce(Command), // TODO(rescrv): name better
 
     StartProposer(Ballot),
+
+    DeliverMessage(InFlightMessage),
+    DuplicateMessage(InFlightMessage),
+    DropMessage(InFlightMessage),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InFlightMessage {
+    originator: ReplicaID,
+    message: Message,
 }
 
 pub struct TransitionGenerator {}
@@ -26,11 +43,21 @@ impl TransitionGenerator {
     pub fn next(&mut self, sim: &Simulator) -> Transition {
         let mut rng = rand::thread_rng();
         loop {
-            return match rng.gen_range(0, 7) {
-                0 => self.generate_introduce(),
+            let t = match rng.gen_range(0, 20) {
+                3 => self.generate_introduce(),
+
                 5 => self.generate_start_proposer(sim),
-                _ => continue,
+
+                10 => self.generate_deliver_message(sim),
+                11 => self.generate_duplicate_message(sim),
+                12 => self.generate_drop_message(sim),
+
+                _ => Transition::NOP,
             };
+            if t == Transition::NOP {
+                continue;
+            }
+            return t
         }
     }
 

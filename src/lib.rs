@@ -9,14 +9,13 @@ use crate::configuration::GroupID;
 use crate::configuration::ReplicaID;
 
 pub trait Environment {
-    // Send a phase 1a message to the named acceptor.
-    fn send_phase_1a_message(&self, acceptor: &ReplicaID, ballot: &Ballot);
-    // Send a phase 2a message to the named acceptor.
-    fn send_phase_2a_message(&self, acceptor: &ReplicaID, pval: &PValue);
+    // Send a message.
+    // There is explicitly no return value.  See "Error Handling" in the README.
+    fn send(&mut self, msg: Message);
 
     // Report some form of misbehavior.
     // These are hard errors, and each one indicates a problem that should be investigated.
-    fn report_misbehavior(&self, m: Misbehavior);
+    fn report_misbehavior(&mut self, m: Misbehavior);
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -107,6 +106,14 @@ pub enum Misbehavior {
     Phase2WrongBallot(ReplicaID, Ballot, Ballot),
     Phase2LostPValue(ReplicaID, Ballot, u64),
     ProposerWrongBallot(ReplicaID, Ballot),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Message {
+    Phase1A{ acceptor: ReplicaID, ballot: Ballot },
+    Phase1B,
+    Phase2A{ acceptor: ReplicaID, pval: PValue },
+    Phase2B,
 }
 
 pub struct Paxos {

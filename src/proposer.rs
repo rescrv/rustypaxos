@@ -10,6 +10,7 @@ use super::configuration::ReplicaID;
 use super::Ballot;
 use super::Command;
 use super::Environment;
+use super::Message;
 use super::Misbehavior;
 use super::PValue;
 use super::PaxosPhase;
@@ -97,7 +98,7 @@ impl Proposer {
     pub fn make_progress(&mut self, env: &mut Environment) {
         // Send phase one messages to replicas we haven't had join our quorum.
         for replica in self.followers.waiting_for() {
-            self.send_phase_1a_message(env, &replica);
+            env.send(Message::Phase1A{acceptor: replica, ballot: self.ballot});
         }
         // If in phase two, do the work for phase two.
         if self.phase == PaxosPhase::TWO {
@@ -260,24 +261,10 @@ impl Proposer {
                 Some(v) => v,
                 None => continue,
             };
-            let pval = &pval_state.pval.clone();
             for replica in pval_state.quorum.waiting_for() {
-                self.send_phase_2a_message(env, &replica, pval);
+                env.send(Message::Phase2A{acceptor: replica, pval: pval_state.pval.clone()});
             }
         }
-    }
-
-    fn send_phase_1a_message(&mut self, env: &mut Environment, acceptor: &ReplicaID) {
-        env.send_phase_1a_message(acceptor, &self.ballot);
-    }
-
-    fn send_phase_2a_message(
-        &mut self,
-        env: &mut Environment,
-        acceptor: &ReplicaID,
-        pval: &PValue,
-    ) {
-        env.send_phase_2a_message(acceptor, pval);
     }
 
     fn bind_commands_to_slots(&mut self) {
@@ -340,7 +327,6 @@ impl PValueState {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::fmt::Debug;
     use std::rc::Rc;
 
@@ -363,9 +349,9 @@ mod tests {
         config: Rc<Configuration>,
         ballot: Ballot,
 
-        misbehaviors: Rc<RefCell<Vec<Misbehavior>>>,
-        phase_1a_messages: Rc<RefCell<Vec<(ReplicaID, Ballot)>>>,
-        phase_2a_messages: Rc<RefCell<Vec<(ReplicaID, PValue)>>>,
+        misbehaviors: Vec<Misbehavior>,
+        phase_1a_messages: Vec<(ReplicaID, Ballot)>,
+        phase_2a_messages: Vec<(ReplicaID, PValue)>,
     }
 
     impl TestEnvironment {
@@ -384,9 +370,9 @@ mod tests {
                 config: config,
                 ballot: ballot,
 
-                misbehaviors: Rc::new(RefCell::new(Vec::new())),
-                phase_1a_messages: Rc::new(RefCell::new(Vec::new())),
-                phase_2a_messages: Rc::new(RefCell::new(Vec::new())),
+                misbehaviors: Vec::new(),
+                phase_1a_messages: Vec::new(),
+                phase_2a_messages: Vec::new(),
             }
         }
 
@@ -401,47 +387,47 @@ mod tests {
         fn assert_ok(&self) {
             assert_eq!(
                 0,
-                self.misbehaviors.borrow().len(),
+                self.misbehaviors.len(),
                 "check there was no misbehavior"
             );
         }
 
         fn assert_misbehaviors(&self, misbehaviors: &[Misbehavior]) {
-            compare_slices(misbehaviors, self.misbehaviors.borrow().as_slice());
+            compare_slices(misbehaviors, self.misbehaviors.as_slice());
         }
 
-        fn clear_phase_1a_messages(&self) {
-            self.phase_1a_messages.borrow_mut().clear();
+        fn clear_phase_1a_messages(&mut self) {
+            self.phase_1a_messages.clear();
         }
 
         fn assert_phase_1a_messages(&self, expect: &[(ReplicaID, Ballot)]) {
-            compare_slices(expect, self.phase_1a_messages.borrow().as_slice());
+            compare_slices(expect, self.phase_1a_messages.as_slice());
         }
 
-        fn clear_phase_2a_messages(&self) {
-            self.phase_2a_messages.borrow_mut().clear();
+        fn clear_phase_2a_messages(&mut self) {
+            self.phase_2a_messages.clear();
         }
 
         fn assert_phase_2a_messages(&self, expect: &[(ReplicaID, PValue)]) {
-            compare_slices(expect, self.phase_2a_messages.borrow().as_slice());
+            compare_slices(expect, self.phase_2a_messages.as_slice());
         }
     }
 
     impl Environment for TestEnvironment {
-        fn send_phase_1a_message(&self, acceptor: &ReplicaID, ballot: &Ballot) {
-            self.phase_1a_messages
-                .borrow_mut()
-                .push((*acceptor, *ballot));
+        fn send(&mut self, msg: Message) {
+            match msg {
+                Message::Phase1A{acceptor, ballot} => {
+                    self.phase_1a_messages.push((acceptor, ballot));
+                },
+                Message::Phase2A{acceptor, pval} => {
+                    self.phase_2a_messages.push((acceptor, pval));
+                },
+                _ => { panic!("unexpected message {:?}", msg); },
+            };
         }
 
-        fn send_phase_2a_message(&self, acceptor: &ReplicaID, pval: &PValue) {
-            self.phase_2a_messages
-                .borrow_mut()
-                .push((*acceptor, pval.clone()));
-        }
-
-        fn report_misbehavior(&self, m: Misbehavior) {
-            self.misbehaviors.borrow_mut().push(m);
+        fn report_misbehavior(&mut self, m: Misbehavior) {
+            self.misbehaviors.push(m);
         }
     }
 
