@@ -1,11 +1,8 @@
-use crate::configuration::ReplicaID;
 use crate::types::Ballot;
-use crate::types::Command;
 use crate::types::PValue;
 use crate::AcceptorAction;
 use crate::Environment;
 use crate::Message;
-use crate::Misbehavior;
 
 // An acceptor is the durable memory of the system.  In phase one, the acceptor commits to follow a
 // ballot for a range of slots if and only if no higher ballots have been accepted for those slots.
@@ -213,6 +210,9 @@ mod tests {
     use rand::Rng;
 
     use crate::testutil::*;
+    use crate::configuration::ReplicaID;
+    use crate::types::Command;
+    use crate::Misbehavior;
 
     use super::*;
 
@@ -270,7 +270,7 @@ mod tests {
             }
         }
 
-        fn report_misbehavior(&mut self, m: Misbehavior) {
+        fn report_misbehavior(&mut self, _m: Misbehavior) {
             panic!("no misbehavior in acceptor");
         }
     }

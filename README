@@ -29,6 +29,7 @@ TODO
 - doc optimization about replica quorum
 
 - simulate misdelivery
+- sort out the replicaID passed to process_*
 
 Corner Cases:
 - leader failover guarantees same decision decided twice

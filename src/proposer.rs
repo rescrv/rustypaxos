@@ -10,7 +10,6 @@ use super::configuration::ReplicaID;
 use super::types::Ballot;
 use super::types::Command;
 use super::types::PValue;
-use super::AcceptorAction;
 use super::Environment;
 use super::Message;
 use super::Misbehavior;
@@ -340,6 +339,7 @@ mod tests {
     use crate::configuration::DEFAULT_ALPHA;
     use crate::testutil::*;
     use crate::PValue;
+    use crate::AcceptorAction;
 
     fn compare_slices<T: PartialEq + Debug>(expected: &[T], returned: &[T]) {
         for e in expected.iter() {
@@ -429,7 +429,7 @@ mod tests {
             };
         }
 
-        fn persist_acceptor(&mut self, action: AcceptorAction) {
+        fn persist_acceptor(&mut self, _action: AcceptorAction) {
             // If you're wondering why this is true, think about the following observation of the
             // Paxos protocol:  the acceptors form the durable memory of the system and a proposer
             // makes things durable by talking to acceptors.
@@ -439,7 +439,7 @@ mod tests {
             panic!("proposers should not persist acceptor data");
         }
 
-        fn send_when_persistent(&mut self, msg: Message) {
+        fn send_when_persistent(&mut self, _msg: Message) {
             // See the above comment on `persist` for why this panic is in place.
             panic!("proposers should always invoke send, not send_when_persistent")
         }

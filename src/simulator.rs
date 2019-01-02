@@ -96,7 +96,6 @@ impl TransitionGenerator {
             }
             _ => {}
         }
-        let x: usize = rng.gen();
         let leader = self.choose_replica(sim);
         Transition::StartProposer(Ballot::new(number, leader))
     }

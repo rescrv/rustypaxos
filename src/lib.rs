@@ -115,13 +115,13 @@ pub enum AcceptorAction {
 impl Message {
     pub fn intended_recipient(&self) -> ReplicaID {
         match self {
-            Message::Phase1A { acceptor, ballot } => *acceptor,
-            Message::Phase1B { ballot, pvalues } => ballot.leader(),
+            Message::Phase1A { acceptor, ballot: _ } => *acceptor,
+            Message::Phase1B { ballot, pvalues: _ } => ballot.leader(),
             Message::Phase2A {
                 acceptor: a,
                 pval: _,
             } => *a,
-            Message::Phase2B { ballot, slot } => panic!("not implemented"), // XXX
+            Message::Phase2B { ballot, slot: _ } => ballot.leader(),
             Message::ProposerNACK { ballot } => ballot.leader(),
         }
     }
@@ -184,14 +184,22 @@ impl Paxos {
                 ballot: b,
             } => {
                 self.process_phase_1a_message(env, &src, a, b);
-            }
+            },
+            Message::Phase1B { ballot, pvalues } => {
+                self.process_phase_1b_message(env, &src, &ballot.leader(), ballot, pvalues);
+            },
             Message::Phase2A {
                 acceptor: a,
                 pval: p,
             } => {
                 self.process_phase_2a_message(env, &src, a, p);
-            }
-            _ => panic!("not implemented"), // XXX
+            },
+            Message::Phase2B { ballot, slot } => {
+                self.process_phase_2b_message(env, &src, &ballot.leader(), ballot, *slot);
+            },
+            Message::ProposerNACK { ballot } => {
+                self.process_proposer_nack(&src, ballot);
+            },
         };
     }
 
@@ -225,7 +233,18 @@ impl Paxos {
         current: &Ballot,
         pvalues: &[PValue],
     ) {
-        print!("PHASE 1B: {}->{} {}\n", acceptor, proposer, current);
+        // Make sure that we are the intended recipient.
+        if *proposer != self.id {
+            env.report_misbehavior(Misbehavior::WrongRecipient(*acceptor, *proposer, self.id));
+            return;
+        }
+        // Get the proposer and let them know about the new follower.
+        match self.get_proposer(current) {
+            Some(p) => {
+                p.process_phase_1b_message(env, acceptor, current, pvalues);
+            }
+            None => {},
+        }
     }
 
     fn process_phase_2a_message(
@@ -260,7 +279,27 @@ impl Paxos {
         ballot: &Ballot,
         slot: u64,
     ) {
-        print!("PHASE 2B: {}->{} {}@{}\n", acceptor, proposer, ballot, slot);
+        // Make sure that we are the intended recipient.
+        if *proposer != self.id {
+            env.report_misbehavior(Misbehavior::WrongRecipient(*acceptor, *proposer, self.id));
+            return;
+        }
+        // Get the proposer and let them know about the accepted proposal.
+        match self.get_proposer(ballot) {
+            Some(p) => {
+                p.process_phase_2b_message(env, acceptor, ballot, slot);
+            }
+            None => {},
+        }
+    }
+
+    fn process_proposer_nack(
+        &mut self,
+        acceptor: &ReplicaID,
+        ballot: &Ballot,
+    ) {
+        // TODO(rescrv) do something here
+        print!("{} NACK'd {}\n", acceptor, ballot);
     }
 
     fn current_configuration(&self) -> rc::Rc<configuration::Configuration> {
@@ -274,6 +313,10 @@ impl Paxos {
             panic!("Paxos initialized without a configuration");
         }
         rc::Rc::clone(self.configs.get(&epoch).unwrap())
+    }
+
+    fn get_proposer(&mut self, ballot: &Ballot) -> Option<&mut proposer::Proposer> {
+        self.proposers.get_mut(ballot)
     }
 }
 
