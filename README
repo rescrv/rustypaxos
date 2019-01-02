@@ -1,0 +1,40 @@
+Error Handling
+==============
+
+TODO Describe the error handling philosophy here.  This section is referred to
+by name in src/lib.rs
+
+Durability
+==========
+
+TODO Describe the durability philosophy here.  This section is referred to
+by name in src/lib.rs
+
+TODO
+====
+
+- There has to be a way to encode quorum into the type system
+- Client message forwarding
+- Verification "scripts" for doing bad things
+- optimization of replica running multiple proposers
+- bind commands to slots should transmit only those new commands
+- eliminate copying of pvalues
+- move core types into own module
+- do something with wrong recipients
+- check that proposers lame duck themselves
+- restart
+- add node
+- lots of copying that probably doesn't have to happen
+
+Corner Cases:
+- leader failover guarantees same decision decided twice
+- twist delivery to prioritize certain message types
+- dualing proposers
+- simulator two instances, same replica id
+
+
+Insights
+========
+// This protocol is often compared to two-phase commit, but such a comparison
+// is slightly flawed.  In two phase commit, a node promises and locks the
+promise.   In paxos it does not lock and can abandon.  Blah de blah
