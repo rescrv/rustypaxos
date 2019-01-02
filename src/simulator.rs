@@ -11,6 +11,7 @@ use crate::GroupID;
 use crate::Message;
 use crate::Misbehavior;
 use crate::Paxos;
+use crate::AcceptorAction;
 use crate::ReplicaID;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -241,6 +242,14 @@ impl Environment for SimulatorEnvironment {
             src: self.id,
             message,
         });
+    }
+
+    fn persist_acceptor(&mut self, action: AcceptorAction) {
+        // TODO(rescrv);
+    }
+
+    fn send_when_persistent(&mut self, msg: Message) {
+        // TODO(rescrv)
     }
 
     // TODO(rescrv): make sure this shows up

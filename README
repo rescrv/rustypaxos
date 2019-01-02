@@ -26,6 +26,8 @@ TODO
 - add node
 - lots of copying that probably doesn't have to happen
 
+- doc optimization about replica quorum
+
 Corner Cases:
 - leader failover guarantees same decision decided twice
 - twist delivery to prioritize certain message types

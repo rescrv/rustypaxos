@@ -22,24 +22,38 @@ pub mod proposer;
 pub mod simulator;
 pub mod types;
 
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
-struct Persistent(u64);
-
+/// The hooks this Paxos implementation has into the environment to perform stateful I/O.
+///
+/// This is abstracted away behind the trait to facilitate testing, simulation, and fault
+/// injection.  By keeping this contract with the environment minimal, we constrain the extent to
+/// which errors in the environment can inadvertently affect safety.
+///
+/// See "Error Handling" in the README for more details.
 pub trait Environment {
-    // Send a message.
-    // There is explicitly no return value.  See "Error Handling" in the README.
+    /// Send a message.
+    /// There is explicitly no return value.  See "Error Handling" in the README.
     fn send(&mut self, msg: Message);
 
-    // Persist the given state somewhere durable.
-    // The return value here is of type DurabilityThreshold.  See the section in the README about
-    // durability for more information on what this means and how it fits into the overall design.
-    // Errors in I/O cannot be returned here, but should instead show up as the durable threshold
-    // never passing this mark.
-    // TODO(rescrv) describe this ^ better
-    //fn persist(&mut self);
+    /// Persist acceptor state on durable storage.
+    ///
+    /// There is explicitly no return value.  See "Error Handling" in the README.
+    fn persist_acceptor(&mut self, action: AcceptorAction);
+
+    /// Send a message once all previously persisted state is durable.
+    ///
+    /// It is necessary that every `persist*` call made prior to this call be fully durable before
+    /// the messages are sent to the network.  Failure to adhere to this ordering will violate the
+    /// safety guarantees of the protocol and will lead to an opportunity for data loss.
+    ///
+    /// Although the call has `persistent` in its name, this call does no local I/O and only sends
+    /// messages over the network.
+    ///
+    /// There is explicitly no return value.  See "Error Handling" in the README.
+    fn send_when_persistent(&mut self, msg: Message);
 
     // Report some form of misbehavior.
-    // These are hard errors, and each one indicates a problem that should be investigated.
+    // These are hard errors that should never happen.  Every single one should indicate a problem
+    // that should be investigated.
     fn report_misbehavior(&mut self, m: Misbehavior);
 }
 
@@ -64,24 +78,40 @@ pub enum Misbehavior {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Message {
     Phase1A { acceptor: ReplicaID, ballot: Ballot },
-    Phase1B,
+    Phase1B { ballot: Ballot, pvalues: Vec<PValue> },
     Phase2A { acceptor: ReplicaID, pval: PValue },
-    Phase2B,
+    Phase2B { ballot: Ballot, slot: u64 },
+    ProposerNACK { ballot: Ballot },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AcceptorAction {
+    FollowBallot { ballot: Ballot, start: u64, limit: u64 },
+    AcceptProposal { pval: PValue },
 }
 
 impl Message {
     pub fn intended_recipient(&self) -> ReplicaID {
         match self {
             Message::Phase1A {
-                acceptor: a,
-                ballot: _,
-            } => *a,
-            Message::Phase1B => panic!("not implemented"), // XXX
+                acceptor,
+                ballot,
+            } => *acceptor,
+            Message::Phase1B {
+                ballot,
+                pvalues,
+            } => ballot.leader(),
             Message::Phase2A {
                 acceptor: a,
                 pval: _,
             } => *a,
-            Message::Phase2B => panic!("not implemented"), // XXX
+            Message::Phase2B {
+                ballot,
+                slot,
+            } => panic!("not implemented"), // XXX
+            Message::ProposerNACK {
+                ballot,
+            } => ballot.leader(),
         }
     }
 }

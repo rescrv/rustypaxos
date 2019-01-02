@@ -1,7 +1,11 @@
-use super::PValue;
 use crate::configuration::ReplicaID;
-use crate::Ballot;
+use crate::types::Ballot;
+use crate::types::Command;
+use crate::types::PValue;
+use crate::AcceptorAction;
 use crate::Environment;
+use crate::Message;
+use crate::Misbehavior;
 
 // An acceptor is the durable memory of the system.  In phase one, the acceptor commits to follow a
 // ballot for a range of slots if and only if no higher ballots have been accepted for those slots.
@@ -10,12 +14,14 @@ use crate::Environment;
 // committed to following for that slot.
 pub struct Acceptor {
     ballots: BallotTracker,
+    pvalues: Vec<PValue>,
 }
 
 impl Acceptor {
     pub fn new() -> Acceptor {
         Acceptor {
             ballots: BallotTracker::new(),
+            pvalues: Vec::new(),
         }
     }
 
@@ -26,36 +32,73 @@ impl Acceptor {
     pub fn process_phase_1a_message(
         &mut self,
         env: &mut Environment,
-        proposer: &ReplicaID,
         ballot: &Ballot,
         start: u64,
         limit: u64,
     ) {
         if self.ballots.maybe_adopt(*ballot, start, limit) {
-            // make it durable
-            // d = env.persist(phase1b(ballot, start, limit))
-            // a.durable = d
-            // send phase1b when durable=d
+            env.persist_acceptor(AcceptorAction::FollowBallot {
+                ballot: *ballot,
+                start,
+                limit,
+            });
+            env.send_when_persistent(Message::Phase1B {
+                ballot: *ballot,
+                pvalues: self.pvalues_for(start, limit),
+            });
         } else {
-            // send nack
+            // There's some nuance here.  Normal acceptor actions are to update state in memory,
+            // persist it on disk, and then expose the decisions made in memory only after the
+            // acceptor state is persistent, which is done by using the send_when_persistent call
+            // on the Environment object
+            //
+            // Normally, we never expose the effects of the in-memory state until everything is
+            // persistent because we need to remember the decisions we made.  NACK is an advisory
+            // state that's akin to saying, "I'm giving you positive confirmation that I received
+            // your request, but I cannot actually act on it.
+            //
+            // Theoretically we could just never send these requests and the protocol would still
+            // be safe.  Similarly, we could spuriously send these requests and sabotage the
+            // progress of a well-meaning proposer.
+            //
+            // Put another way:  If we forget that we ever sent this NACK, the protocol is fine.
+            // If we send a NACK spuriously, the protocol is fine.  We could flip a coin on every
+            // message and send a NACK if it comes up tails without any effect on safety
+            //
+            // Because NACK does not affect safety, we can send without waiting for persistence.
+            env.send(Message::ProposerNACK { ballot: *ballot });
         }
     }
 
     pub fn process_phase_2a_message(
         &mut self,
         env: &mut Environment,
-        proposer: &ReplicaID,
-        pval: &PValue,
+        pval: PValue,
     ) {
         if self.ballots.ballot_for_slot(pval.slot()) == pval.ballot() {
-            // make it durable
-            // d = env.persist(phase1b(pval))
-            // a.durable =d
+            env.persist_acceptor(AcceptorAction::AcceptProposal { pval: pval.clone() });
+            env.send_when_persistent(Message::Phase2B {
+                ballot: pval.ballot(),
+                slot: pval.slot(),
+            });
             // send phase1b when durable =d
-            // self.pvales = append(self.pvalues, pval);
+            self.pvalues.push(pval);
         } else {
-            // send nack
+            // See the comment above the other NACK.
+            env.send(Message::ProposerNACK {
+                ballot: pval.ballot(),
+            });
         }
+    }
+
+    fn pvalues_for(&self, start: u64, limit: u64) -> Vec<PValue> {
+        let mut values = Vec::with_capacity(self.pvalues.len());
+        for pval in self.pvalues.iter() {
+            if start <= pval.slot() && pval.slot() < limit {
+                values.push(pval.clone());
+            }
+        }
+        values
     }
 }
 
@@ -177,6 +220,161 @@ mod tests {
 
     use super::*;
 
+    struct TestEnvironment {
+        send_persistent: bool,
+        nacked: Vec<Ballot>,
+        actions: Vec<AcceptorAction>,
+        phase_1b_messages: Vec<(Ballot, Vec<PValue>)>,
+        phase_2b_messages: Vec<(Ballot, u64)>,
+    }
+
+    impl TestEnvironment {
+        fn new() -> TestEnvironment {
+            TestEnvironment {
+                send_persistent: false,
+                nacked: Vec::new(),
+                actions: Vec::new(),
+                phase_1b_messages: Vec::new(),
+                phase_2b_messages: Vec::new(),
+            }
+        }
+    }
+
+    impl Environment for TestEnvironment {
+        fn send(&mut self, msg: Message) {
+            match msg {
+                Message::ProposerNACK { ballot } => {
+                    self.nacked.push(ballot);
+                }
+                _ => {
+                    panic!("unexpected non-durable message {:?}", msg);
+                }
+            }
+        }
+
+        fn persist_acceptor(&mut self, action: AcceptorAction) {
+            if self.send_persistent {
+                panic!("persist_acceptor called after send_when_persistent");
+            }
+            self.actions.push(action);
+        }
+
+        fn send_when_persistent(&mut self, msg: Message) {
+            self.send_persistent = true;
+            match msg {
+                Message::Phase1B { ballot, pvalues } => {
+                    self.phase_1b_messages.push((ballot, pvalues));
+                }
+                Message::Phase2B { ballot, slot } => {
+                    self.phase_2b_messages.push((ballot, slot));
+                }
+                _ => {
+                    panic!("unexpected durable message {:?}", msg);
+                }
+            }
+        }
+
+        fn report_misbehavior(&mut self, m: Misbehavior) {
+            panic!("no misbehavior in acceptor");
+        }
+    }
+
+    // Tests that the acceptor adopts a ballot and persists/sends.
+    #[test]
+    fn acceptor_follows() {
+        let mut acc = Acceptor::new();
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_5_REPLICA1, 0, 64);
+        assert_eq!(&env.nacked, &[]);
+        assert_eq!(
+            &env.actions,
+            &[AcceptorAction::FollowBallot {
+                ballot: BALLOT_5_REPLICA1,
+                start: 0,
+                limit: 64
+            }],
+        );
+        assert_eq!(&env.phase_1b_messages, &[
+                   (BALLOT_5_REPLICA1, [].to_vec()),
+        ]);
+        assert_eq!(&env.phase_2b_messages, &[]);
+    }
+
+    // Tests that the acceptor will NACK when a ballot is not accepted.
+    #[test]
+    fn acceptor_nacks_phase_1() {
+        let mut acc = Acceptor::new();
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_5_REPLICA1, 0, 64);
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_4_REPLICA1, 0, 64);
+        assert_eq!(&env.nacked, &[BALLOT_4_REPLICA1]);
+        assert_eq!(&env.actions, &[]);
+        assert_eq!(&env.phase_1b_messages, &[]);
+        assert_eq!(&env.phase_2b_messages, &[]);
+    }
+
+    // Tests that the acceptor adopts a ballot and persists/sends.
+    #[test]
+    fn acceptor_accepts_proposal() {
+        let pval = PValue::new(32, BALLOT_5_REPLICA1, Command::data("command"));
+        let mut acc = Acceptor::new();
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_5_REPLICA1, 0, 64);
+        let mut env = TestEnvironment::new();
+        acc.process_phase_2a_message(&mut env, pval.clone());
+        assert_eq!(&env.nacked, &[]);
+        assert_eq!(&env.actions, &[AcceptorAction::AcceptProposal { pval: pval.clone(), }]);
+        assert_eq!(&env.phase_1b_messages, &[]);
+        assert_eq!(&env.phase_2b_messages, &[(BALLOT_5_REPLICA1, 32)]);
+        assert_eq!(acc.pvalues, &[pval.clone()]);
+    }
+
+    // Test that the acceptor will NACK a proposal
+    #[test]
+    fn acceptor_nacks_proposal() {
+        let pval = PValue::new(32, BALLOT_5_REPLICA1, Command::data("command"));
+        let mut acc = Acceptor::new();
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_5_REPLICA1, 0, 64);
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_6_REPLICA2, 0, 64);
+        let mut env = TestEnvironment::new();
+        acc.process_phase_2a_message(&mut env, pval.clone());
+        assert_eq!(&env.nacked, &[BALLOT_5_REPLICA1]);
+        assert_eq!(&env.actions, &[]);
+        assert_eq!(&env.phase_1b_messages, &[]);
+        assert_eq!(&env.phase_2b_messages, &[]);
+        assert_eq!(acc.pvalues, &[]);
+    }
+
+    // Test that the acceptor returns previous pvalues
+    #[test]
+    fn acceptor_returns_pvalues() {
+        let pval = PValue::new(32, BALLOT_5_REPLICA1, Command::data("command"));
+        let mut acc = Acceptor::new();
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_5_REPLICA1, 0, 64);
+        let mut env = TestEnvironment::new();
+        acc.process_phase_2a_message(&mut env, pval.clone());
+        let mut env = TestEnvironment::new();
+        acc.process_phase_1a_message(&mut env, &BALLOT_6_REPLICA1, 0, 64);
+        assert_eq!(&env.nacked, &[]);
+        assert_eq!(
+            &env.actions,
+            &[AcceptorAction::FollowBallot {
+                ballot: BALLOT_6_REPLICA1,
+                start: 0,
+                limit: 64
+            }],
+        );
+        assert_eq!(&env.phase_1b_messages, &[
+                   (BALLOT_6_REPLICA1, [pval.clone()].to_vec()),
+        ]);
+        assert_eq!(&env.phase_2b_messages, &[]);
+        assert_eq!(acc.pvalues, &[pval.clone()]);
+    }
+
     fn check_ordered_promises(bt: &BallotTracker, promises: &[ActiveBallot]) {
         let observed: &[ActiveBallot] = &bt.ordered_promises();
         assert_eq!(promises, observed);
@@ -187,6 +385,7 @@ mod tests {
         }
     }
 
+    // Test that an empty ballot tracker has BOTTOM as its highest ballot.
     #[test]
     fn ballot_tracker_highest_ballot_bottom() {
         let bt = BallotTracker::new();
@@ -194,6 +393,7 @@ mod tests {
         check_ordered_promises(&bt, &[]);
     }
 
+    // Test that a single adopted ballot becomes the highest ballot.
     #[test]
     fn ballot_tracker_highest_ballot() {
         let mut bt = BallotTracker::new();
@@ -209,6 +409,7 @@ mod tests {
         );
     }
 
+    // Test that the highest ballot wins the highest ballot contest.
     #[test]
     fn ballot_tracker_adopt_success() {
         let mut bt = BallotTracker::new();
@@ -225,6 +426,7 @@ mod tests {
         );
     }
 
+    // Test that a lower ballot cannot be accepted after a higher ballot.
     #[test]
     fn ballot_tracker_adopt_failure() {
         let mut bt = BallotTracker::new();
@@ -241,6 +443,7 @@ mod tests {
         );
     }
 
+    // Test that a higher ballot will override the start range of a lower ballot.
     #[test]
     fn ballot_tracker_adopt_start_range() {
         let mut bt = BallotTracker::new();
@@ -264,6 +467,7 @@ mod tests {
         );
     }
 
+    // Test that a higher ballot will override the end range of a lower ballot.
     #[test]
     fn ballot_tracker_adopt_end_range() {
         let mut bt = BallotTracker::new();
@@ -287,6 +491,7 @@ mod tests {
         );
     }
 
+    // Test that a higher ballot will override the center of the range of a lower ballot.
     #[test]
     fn ballot_tracker_adopt_split_range() {
         let mut bt = BallotTracker::new();
@@ -315,6 +520,8 @@ mod tests {
         );
     }
 
+    // Test that a ballot that's not the highest, but is higher than all ballots for its slots, can
+    // get adopted by the ballot tracker.
     #[test]
     fn ballot_tracker_adopt_backfill_not_highest() {
         let mut bt = BallotTracker::new();
@@ -349,6 +556,7 @@ mod tests {
         );
     }
 
+    // Test that a backfill can be the highest ballot.
     #[test]
     fn ballot_tracker_adopt_backfill_highest() {
         let mut bt = BallotTracker::new();
@@ -383,6 +591,24 @@ mod tests {
         );
     }
 
+    // Test that a ballot can be adopted twice.
+    #[test]
+    fn ballot_tracker_adopt_twice() {
+        let mut bt = BallotTracker::new();
+        assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
+        assert!(bt.maybe_adopt(BALLOT_5_REPLICA1, 0, 64));
+        assert_eq!(BALLOT_5_REPLICA1, bt.highest_ballot());
+        check_ordered_promises(
+            &bt,
+            &[ActiveBallot {
+                ballot: BALLOT_5_REPLICA1,
+                start: 0,
+                limit: 64,
+            }],
+        );
+    }
+
+    // Test that some random assignments of ballots matches our expectations.
     #[test]
     fn ballot_tracker_random() {
         const ITERS: u64 = 1000;

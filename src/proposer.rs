@@ -12,6 +12,7 @@ use super::types::Command;
 use super::types::PValue;
 use super::Environment;
 use super::Message;
+use super::AcceptorAction;
 use super::Misbehavior;
 use super::PaxosPhase;
 
@@ -232,6 +233,8 @@ impl Proposer {
             env.report_misbehavior(Misbehavior::NotInPhase2(*acceptor, self.ballot));
             return;
         }
+        // XXX check they follow phase1 quorum
+
         // Get the pvalue state.
         let pval_state = match self.proposals.get_mut(&slot) {
             Some(x) => x,
@@ -424,6 +427,21 @@ mod tests {
                     panic!("unexpected message {:?}", msg);
                 }
             };
+        }
+
+        fn persist_acceptor(&mut self, action: AcceptorAction) {
+            // If you're wondering why this is true, think about the following observation of the
+            // Paxos protocol:  the acceptors form the durable memory of the system and a proposer
+            // makes things durable by talking to acceptors.
+            //
+            // If you find yourself needing to persist state within the acceptor, it is a bad smell
+            // and may be a strong indicator of unsafe behavior.
+            panic!("proposers should not persist acceptor data");
+        }
+
+        fn send_when_persistent(&mut self, msg: Message) {
+            // See the above comment on `persist` for why this panic is in place.
+            panic!("proposers should always invoke send, not send_when_persistent")
         }
 
         fn report_misbehavior(&mut self, m: Misbehavior) {
