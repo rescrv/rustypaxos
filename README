@@ -28,6 +28,8 @@ TODO
 
 - doc optimization about replica quorum
 
+- simulate misdelivery
+
 Corner Cases:
 - leader failover guarantees same decision decided twice
 - twist delivery to prioritize certain message types

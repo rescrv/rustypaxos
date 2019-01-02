@@ -51,9 +51,9 @@ pub trait Environment {
     /// There is explicitly no return value.  See "Error Handling" in the README.
     fn send_when_persistent(&mut self, msg: Message);
 
-    // Report some form of misbehavior.
-    // These are hard errors that should never happen.  Every single one should indicate a problem
-    // that should be investigated.
+    /// Report some form of misbehavior.
+    /// These are hard errors that should never happen.  Every single one should indicate a problem
+    /// that should be investigated.
     fn report_misbehavior(&mut self, m: Misbehavior);
 }
 
@@ -67,12 +67,14 @@ pub enum PaxosPhase {
 pub enum Misbehavior {
     ProposerInLameDuck,
     PValueConflict(PValue, PValue),
-    NotAReplica(ReplicaID), // TODO(rescrv): does config matter here?
+    NotAReplica(ReplicaID),
     NotInPhase2(ReplicaID, Ballot),
     Phase1PValueAboveBallot(ReplicaID, Ballot, PValue),
     Phase2WrongBallot(ReplicaID, Ballot, Ballot),
     Phase2LostPValue(ReplicaID, Ballot, u64),
     ProposerWrongBallot(ReplicaID, Ballot),
+    ProposerDoesNotMatchLeader(ReplicaID, Ballot),
+    WrongRecipient(ReplicaID, ReplicaID, ReplicaID),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,7 +193,18 @@ impl Paxos {
         acceptor: &ReplicaID,
         current: &Ballot,
     ) {
-        print!("PHASE 1A: {}->{} {}\n", proposer, acceptor, current);
+        // Make sure that we are the intended recipient.
+        if *acceptor != self.id {
+            env.report_misbehavior(Misbehavior::WrongRecipient(*proposer, *acceptor, self.id));
+            return;
+        }
+        // Make sure the sender is authorized to act on this ballot.
+        if *proposer != current.leader() {
+            env.report_misbehavior(Misbehavior::ProposerDoesNotMatchLeader(*proposer, *current));
+            return;
+        }
+        // Delegate to the acceptor.
+        self.acceptor.process_phase_1a_message(env, current, 0, u64::max_value());
     }
 
     fn process_phase_1b_message(
@@ -212,7 +225,18 @@ impl Paxos {
         acceptor: &ReplicaID,
         pval: &PValue,
     ) {
-        print!("PHASE 2A: {}->{} {}\n", proposer, acceptor, pval);
+        // Make sure that we are the intended recipient.
+        if *acceptor != self.id {
+            env.report_misbehavior(Misbehavior::WrongRecipient(*proposer, *acceptor, self.id));
+            return;
+        }
+        // Make sure the sender is authorized to act on this proposal.
+        if *proposer != pval.ballot().leader() {
+            env.report_misbehavior(Misbehavior::ProposerDoesNotMatchLeader(*proposer, pval.ballot()));
+            return;
+        }
+        // Delegate to the acceptor.
+        self.acceptor.process_phase_2a_message(env, pval.clone());
     }
 
     fn process_phase_2b_message(
