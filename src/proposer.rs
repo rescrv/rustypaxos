@@ -4,16 +4,16 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::rc;
 
-use super::Environment;
-use super::Message;
-use super::Misbehavior;
-use super::PaxosPhase;
 use super::configuration::Configuration;
 use super::configuration::QuorumTracker;
 use super::configuration::ReplicaID;
 use super::types::Ballot;
 use super::types::Command;
 use super::types::PValue;
+use super::Environment;
+use super::Message;
+use super::Misbehavior;
+use super::PaxosPhase;
 
 pub struct Proposer {
     // The configuration under which this proposer operates.  Proposers will not operate under

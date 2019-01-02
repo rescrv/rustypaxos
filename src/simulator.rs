@@ -126,7 +126,7 @@ impl TransitionGenerator {
         sim.messages.choose(&mut rng)
     }
 
-    fn choose_replica(&mut self, sim: & Simulator) -> ReplicaID {
+    fn choose_replica(&mut self, sim: &Simulator) -> ReplicaID {
         let mut rng = rand::thread_rng();
         let x: usize = rng.gen();
         sim.replicas[x % sim.replicas.len()].id()
