@@ -6,12 +6,12 @@ use rand::Rng;
 
 use crate::types::Ballot;
 use crate::types::Command;
+use crate::AcceptorAction;
 use crate::Environment;
 use crate::GroupID;
 use crate::Message;
 use crate::Misbehavior;
 use crate::Paxos;
-use crate::AcceptorAction;
 use crate::ReplicaID;
 
 #[derive(Debug, Eq, PartialEq)]

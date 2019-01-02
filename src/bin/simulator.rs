@@ -1,8 +1,8 @@
 use std::process::exit;
 
-use rustypaxos::simulator::TransitionGenerator;
 use rustypaxos::simulator::equivalent;
 use rustypaxos::simulator::Simulator;
+use rustypaxos::simulator::TransitionGenerator;
 
 fn main() {
     let mut gen = TransitionGenerator::new();

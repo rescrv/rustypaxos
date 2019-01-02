@@ -79,41 +79,50 @@ pub enum Misbehavior {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Message {
-    Phase1A { acceptor: ReplicaID, ballot: Ballot },
-    Phase1B { ballot: Ballot, pvalues: Vec<PValue> },
-    Phase2A { acceptor: ReplicaID, pval: PValue },
-    Phase2B { ballot: Ballot, slot: u64 },
-    ProposerNACK { ballot: Ballot },
+    Phase1A {
+        acceptor: ReplicaID,
+        ballot: Ballot,
+    },
+    Phase1B {
+        ballot: Ballot,
+        pvalues: Vec<PValue>,
+    },
+    Phase2A {
+        acceptor: ReplicaID,
+        pval: PValue,
+    },
+    Phase2B {
+        ballot: Ballot,
+        slot: u64,
+    },
+    ProposerNACK {
+        ballot: Ballot,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AcceptorAction {
-    FollowBallot { ballot: Ballot, start: u64, limit: u64 },
-    AcceptProposal { pval: PValue },
+    FollowBallot {
+        ballot: Ballot,
+        start: u64,
+        limit: u64,
+    },
+    AcceptProposal {
+        pval: PValue,
+    },
 }
 
 impl Message {
     pub fn intended_recipient(&self) -> ReplicaID {
         match self {
-            Message::Phase1A {
-                acceptor,
-                ballot,
-            } => *acceptor,
-            Message::Phase1B {
-                ballot,
-                pvalues,
-            } => ballot.leader(),
+            Message::Phase1A { acceptor, ballot } => *acceptor,
+            Message::Phase1B { ballot, pvalues } => ballot.leader(),
             Message::Phase2A {
                 acceptor: a,
                 pval: _,
             } => *a,
-            Message::Phase2B {
-                ballot,
-                slot,
-            } => panic!("not implemented"), // XXX
-            Message::ProposerNACK {
-                ballot,
-            } => ballot.leader(),
+            Message::Phase2B { ballot, slot } => panic!("not implemented"), // XXX
+            Message::ProposerNACK { ballot } => ballot.leader(),
         }
     }
 }
@@ -204,7 +213,8 @@ impl Paxos {
             return;
         }
         // Delegate to the acceptor.
-        self.acceptor.process_phase_1a_message(env, current, 0, u64::max_value());
+        self.acceptor
+            .process_phase_1a_message(env, current, 0, u64::max_value());
     }
 
     fn process_phase_1b_message(
@@ -232,7 +242,10 @@ impl Paxos {
         }
         // Make sure the sender is authorized to act on this proposal.
         if *proposer != pval.ballot().leader() {
-            env.report_misbehavior(Misbehavior::ProposerDoesNotMatchLeader(*proposer, pval.ballot()));
+            env.report_misbehavior(Misbehavior::ProposerDoesNotMatchLeader(
+                *proposer,
+                pval.ballot(),
+            ));
             return;
         }
         // Delegate to the acceptor.

@@ -10,9 +10,9 @@ use super::configuration::ReplicaID;
 use super::types::Ballot;
 use super::types::Command;
 use super::types::PValue;
+use super::AcceptorAction;
 use super::Environment;
 use super::Message;
-use super::AcceptorAction;
 use super::Misbehavior;
 use super::PaxosPhase;
 

@@ -70,11 +70,7 @@ impl Acceptor {
         }
     }
 
-    pub fn process_phase_2a_message(
-        &mut self,
-        env: &mut Environment,
-        pval: PValue,
-    ) {
+    pub fn process_phase_2a_message(&mut self, env: &mut Environment, pval: PValue) {
         if self.ballots.ballot_for_slot(pval.slot()) == pval.ballot() {
             env.persist_acceptor(AcceptorAction::AcceptProposal { pval: pval.clone() });
             env.send_when_persistent(Message::Phase2B {
@@ -294,9 +290,7 @@ mod tests {
                 limit: 64
             }],
         );
-        assert_eq!(&env.phase_1b_messages, &[
-                   (BALLOT_5_REPLICA1, [].to_vec()),
-        ]);
+        assert_eq!(&env.phase_1b_messages, &[(BALLOT_5_REPLICA1, [].to_vec()),]);
         assert_eq!(&env.phase_2b_messages, &[]);
     }
 
@@ -324,7 +318,10 @@ mod tests {
         let mut env = TestEnvironment::new();
         acc.process_phase_2a_message(&mut env, pval.clone());
         assert_eq!(&env.nacked, &[]);
-        assert_eq!(&env.actions, &[AcceptorAction::AcceptProposal { pval: pval.clone(), }]);
+        assert_eq!(
+            &env.actions,
+            &[AcceptorAction::AcceptProposal { pval: pval.clone() }]
+        );
         assert_eq!(&env.phase_1b_messages, &[]);
         assert_eq!(&env.phase_2b_messages, &[(BALLOT_5_REPLICA1, 32)]);
         assert_eq!(acc.pvalues, &[pval.clone()]);
@@ -368,9 +365,10 @@ mod tests {
                 limit: 64
             }],
         );
-        assert_eq!(&env.phase_1b_messages, &[
-                   (BALLOT_6_REPLICA1, [pval.clone()].to_vec()),
-        ]);
+        assert_eq!(
+            &env.phase_1b_messages,
+            &[(BALLOT_6_REPLICA1, [pval.clone()].to_vec()),]
+        );
         assert_eq!(&env.phase_2b_messages, &[]);
         assert_eq!(acc.pvalues, &[pval.clone()]);
     }
