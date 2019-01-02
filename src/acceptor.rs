@@ -47,7 +47,7 @@ impl Acceptor {
         proposer: &ReplicaID,
         pval: &PValue,
     ) {
-        if self.ballots.ballot_for_slot(pval.slot) == pval.ballot {
+        if self.ballots.ballot_for_slot(pval.slot()) == pval.ballot() {
             // make it durable
             // d = env.persist(phase1b(pval))
             // a.durable =d
@@ -391,10 +391,7 @@ mod tests {
         let mut bt = BallotTracker::new();
         let mut active = [Ballot::BOTTOM; SLOTS];
         for i in 0..ITERS {
-            let b = Ballot {
-                number: i,
-                leader: ReplicaID::BOTTOM,
-            };
+            let b = Ballot::new(i, ReplicaID::BOTTOM);
             let start = rng.gen_range(0, SLOTS);
             let limit = rng.gen_range(start, SLOTS);
             if start == limit {

@@ -1,19 +1,29 @@
+//! An implementation of Paxos.
+//!
+//! Start by reading the README file distributed with the source.  It will provide an overview of
+//! Paxos, provide some motivation for why this implementation exists, and discuss some
+//! "philosophical" parts of the design that have a very strong influence on the code.
+//!
+//! Once you've understood and embraced the README, there's probably no real good place to start in
+//! the documentation.  Maybe start with the simulator documentation and code and BFS from there.
+
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fmt;
 use std::rc;
 
 use crate::configuration::GroupID;
 use crate::configuration::ReplicaID;
+use crate::types::Ballot;
+use crate::types::PValue;
 
 pub mod acceptor;
 pub mod configuration;
 pub mod proposer;
 pub mod simulator;
+pub mod types;
 
-// TODO(rescrv): name this better
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
-struct DurabilityThreshold(u64);
+struct Persistent(u64);
 
 pub trait Environment {
     // Send a message.
@@ -37,76 +47,6 @@ pub trait Environment {
 pub enum PaxosPhase {
     ONE,
     TWO,
-}
-
-// A Ballot matches the Paxos terminology and consists of an ordered pair of (number,leader).
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
-pub struct Ballot {
-    number: u64,
-    leader: ReplicaID,
-}
-
-impl Ballot {
-    pub const BOTTOM: Ballot = Ballot {
-        number: 0,
-        leader: ReplicaID::BOTTOM,
-    };
-
-    pub fn new(number: u64, leader: &ReplicaID) -> Ballot {
-        Ballot {
-            number,
-            leader: leader.clone(),
-        }
-    }
-
-    pub fn number(&self) -> u64 {
-        self.number
-    }
-
-    pub fn leader(&self) -> ReplicaID {
-        self.leader
-    }
-}
-
-impl fmt::Display for Ballot {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ballot:{}:{}", self.number, self.leader.viewable_id())
-    }
-}
-
-// A PValue is referred to as a decree in the part time parliament paper.
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
-pub struct PValue {
-    slot: u64,
-    ballot: Ballot,
-    command: Command,
-}
-
-impl PValue {
-    pub fn new(slot: u64, ballot: Ballot, command: String) -> PValue {
-        PValue {
-            slot,
-            ballot,
-            command: Command { command },
-        }
-    }
-}
-
-impl fmt::Display for PValue {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "pvalue:{}:{}:{}",
-            self.slot,
-            self.ballot.number,
-            self.ballot.leader.viewable_id()
-        )
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
-pub struct Command {
-    command: String,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -150,6 +90,7 @@ pub struct Paxos {
     group: GroupID,
     id: ReplicaID,
     configs: HashMap<u64, rc::Rc<configuration::Configuration>>,
+    acceptor: acceptor::Acceptor,
     proposers: HashMap<Ballot, proposer::Proposer>,
 }
 
@@ -162,6 +103,7 @@ impl Paxos {
             group,
             id,
             configs,
+            acceptor: acceptor::Acceptor::new(),
             proposers: HashMap::new(),
         }
     }
@@ -270,80 +212,6 @@ impl Paxos {
 
 #[cfg(test)]
 mod testutil {
-    use super::Ballot;
-
     pub use crate::configuration::testutil::*;
-
-    pub const BALLOT_4_REPLICA1: Ballot = Ballot {
-        number: 4,
-        leader: REPLICA1,
-    };
-
-    pub const BALLOT_5_REPLICA1: Ballot = Ballot {
-        number: 5,
-        leader: REPLICA1,
-    };
-
-    pub const BALLOT_6_REPLICA1: Ballot = Ballot {
-        number: 6,
-        leader: REPLICA1,
-    };
-
-    pub const BALLOT_6_REPLICA2: Ballot = Ballot {
-        number: 6,
-        leader: REPLICA2,
-    };
-
-    pub const BALLOT_7_REPLICA1: Ballot = Ballot {
-        number: 7,
-        leader: REPLICA1,
-    };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::testutil::*;
-    use super::*;
-
-    // Test that the Ballot string looks like what we expect.
-    #[test]
-    fn ballot_string() {
-        assert_eq!(
-            BALLOT_5_REPLICA1.to_string(),
-            "ballot:5:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        );
-    }
-
-    // Test that ballots are ordered first by their number and then by their leader.
-    #[test]
-    fn ballot_order() {
-        assert!(BALLOT_5_REPLICA1 < BALLOT_6_REPLICA1);
-        assert!(BALLOT_6_REPLICA1 < BALLOT_6_REPLICA2);
-        assert!(BALLOT_6_REPLICA2 < BALLOT_7_REPLICA1);
-    }
-
-    // Test that the PValue string looks like what we expect.
-    #[test]
-    fn pvalue_string() {
-        let pval = PValue::new(32, BALLOT_5_REPLICA1, String::from("command"));
-        assert_eq!(
-            pval.to_string(),
-            "pvalue:32:5:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        );
-    }
-
-    // Test that ballots are ordered first by their number and then by their leader.
-    #[test]
-    fn pvalue_order() {
-        let pval1 = PValue::new(1, BALLOT_7_REPLICA1, String::from("command7"));
-        let pval2 = PValue::new(2, BALLOT_6_REPLICA2, String::from("command6"));
-        let pval3 = PValue::new(3, BALLOT_6_REPLICA1, String::from("command6"));
-        let pval4 = PValue::new(4, BALLOT_5_REPLICA1, String::from("command5"));
-        let pval5 = PValue::new(5, BALLOT_4_REPLICA1, String::from("command4"));
-
-        assert!(pval1 < pval2);
-        assert!(pval2 < pval3);
-        assert!(pval3 < pval4);
-        assert!(pval4 < pval5);
-    }
+    pub use crate::types::testutil::*;
 }

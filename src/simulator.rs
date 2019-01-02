@@ -4,8 +4,8 @@ use rand;
 use rand::seq::SliceRandom;
 use rand::Rng;
 
-use crate::Ballot;
-use crate::Command;
+use crate::types::Ballot;
+use crate::types::Command;
 use crate::Environment;
 use crate::GroupID;
 use crate::Message;
@@ -63,9 +63,7 @@ impl TransitionGenerator {
     fn generate_introduce(&mut self) -> Transition {
         let mut rng = rand::thread_rng();
         let x: u64 = rng.gen();
-        Transition::Introduce(Command {
-            command: format!("number={}", x),
-        })
+        Transition::Introduce(Command::data(&format!("number={}", x)))
     }
 
     fn generate_start_proposer(&mut self, sim: &Simulator) -> Transition {
@@ -83,22 +81,23 @@ impl TransitionGenerator {
         // 50% of the time, pick a ballot we know has the same number (default case)
         //     so that we force arbitration by leader
         // but first, make sure we move away from bottom.
-        if ballot.number < 2 {
-            ballot.number = 2;
+        let mut number = ballot.number();
+        if number < 2 {
+            number = 2;
         }
         let x: u64 = rng.gen();
         match x % 4 {
             0 => {
-                ballot.number -= 1;
+                number -= 1;
             }
             1 => {
-                ballot.number += 1;
+                number += 1;
             }
             _ => {}
         }
         let x: usize = rng.gen();
-        ballot.leader = sim.replicas[x % sim.replicas.len()].id();
-        Transition::StartProposer(ballot)
+        let leader = self.choose_replica(sim);
+        Transition::StartProposer(Ballot::new(number, leader))
     }
 
     fn generate_deliver_message(&mut self, sim: &Simulator) -> Transition {
@@ -125,6 +124,12 @@ impl TransitionGenerator {
     fn choose_message<'a>(&mut self, sim: &'a Simulator) -> Option<&'a InFlightMessage> {
         let mut rng = rand::thread_rng();
         sim.messages.choose(&mut rng)
+    }
+
+    fn choose_replica(&mut self, sim: & Simulator) -> ReplicaID {
+        let mut rng = rand::thread_rng();
+        let x: usize = rng.gen();
+        sim.replicas[x % sim.replicas.len()].id()
     }
 }
 
@@ -165,7 +170,7 @@ impl Simulator {
     }
 
     fn apply_start_proposer(&mut self, ballot: &Ballot) {
-        let replica = self.get_replica(ballot.leader);
+        let replica = self.get_replica(ballot.leader());
         let mut env = SimulatorEnvironment::new(replica.id());
         replica.start_proposer(&mut env, ballot);
         self.merge(env);

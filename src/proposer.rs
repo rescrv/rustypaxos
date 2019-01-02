@@ -4,16 +4,16 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::rc;
 
-use super::configuration::Configuration;
-use super::configuration::QuorumTracker;
-use super::configuration::ReplicaID;
-use super::Ballot;
-use super::Command;
 use super::Environment;
 use super::Message;
 use super::Misbehavior;
-use super::PValue;
 use super::PaxosPhase;
+use super::configuration::Configuration;
+use super::configuration::QuorumTracker;
+use super::configuration::ReplicaID;
+use super::types::Ballot;
+use super::types::Command;
+use super::types::PValue;
 
 pub struct Proposer {
     // The configuration under which this proposer operates.  Proposers will not operate under
@@ -35,7 +35,7 @@ pub struct Proposer {
     commands: VecDeque<Command>,
 }
 
-// A Proposer drives a single ballot from being unused to being superceded.
+// A Proposer drives a single ballot from being unused to being superseded.
 impl Proposer {
     pub fn new(config: &rc::Rc<Configuration>, ballot: Ballot) -> Proposer {
         Proposer {
@@ -137,7 +137,7 @@ impl Proposer {
         let mut state = FollowerState::new(self.lower_slot);
         // Validate that all pvalues from the acceptor are less than the current acceptor's ballot.
         for pval in pvalues {
-            if self.ballot < pval.ballot {
+            if self.ballot < pval.ballot() {
                 // TODO(rescrv): write a test for this.
                 env.report_misbehavior(Misbehavior::Phase1PValueAboveBallot(
                     *acceptor,
@@ -149,15 +149,15 @@ impl Proposer {
         }
         // Integrate the pvalues from the acceptor.
         for pval in pvalues {
-            if pval.slot < self.lower_slot || self.upper_slot <= pval.slot {
+            if pval.slot() < self.lower_slot || self.upper_slot <= pval.slot() {
                 // TODO(rescrv): warn if this happens because it is inefficient
                 continue;
             }
-            match self.proposals.entry(pval.slot) {
+            match self.proposals.entry(pval.slot()) {
                 // The acceptor's highest seen pvalue for this slot is less than what we have seen
                 // from another acceptor.  The pvalue should be ignored because a higher ballot
                 // proposed a different value.
-                Entry::Occupied(ref entry) if pval.ballot < entry.get().pval.ballot => {}
+                Entry::Occupied(ref entry) if pval.ballot() < entry.get().pval.ballot() => {}
                 // Otherwise we know the pval from the acceptor has a ballot at least as high as
                 // the entry we already have in the map and we should adopt this as our proposal
                 // for this particular slot.
@@ -165,15 +165,15 @@ impl Proposer {
                     // The catch is that if we've moved onto phase two, we should not just adopt
                     // here.  Instead, maybe pretend that the acceptor does not join this phase one
                     // until slots at least as great as this one.
-                    if self.phase == PaxosPhase::TWO && entry.get().pval.ballot < pval.ballot {
-                        state.start_slot = pval.slot + 1
+                    if self.phase == PaxosPhase::TWO && entry.get().pval.ballot() < pval.ballot() {
+                        state.start_slot = pval.slot() + 1
                     } else {
                         // It's a protocol invariant that two pvalues with the same ballot must have
                         // the same command.  Because we enforce this in a distributed fashion across
                         // all replicas, we cannot do anything except check to make sure this is true
                         // and log when it is violated.
-                        if entry.get().pval.ballot == pval.ballot
-                            && entry.get().pval.command != pval.command
+                        if entry.get().pval.ballot() == pval.ballot()
+                            && entry.get().pval.command() != pval.command()
                         {
                             env.report_misbehavior(Misbehavior::PValueConflict(
                                 entry.get().pval.clone(),
@@ -252,6 +252,7 @@ impl Proposer {
         // TODO(rescrv): Decide how to handle this case, because proposer needs to move forward.
         if pval_state.quorum.has_quorum() {
             // SUCCESS!
+            // TODO(rescrv): do something here
         }
     }
 
@@ -285,11 +286,7 @@ impl Proposer {
                 };
                 entry.insert(PValueState::wrap(
                     self.config.clone(),
-                    PValue {
-                        slot,
-                        ballot: self.ballot,
-                        command,
-                    },
+                    PValue::new(slot, self.ballot, command),
                 ));
             }
         }
@@ -564,9 +561,9 @@ mod tests {
     // Test that acceptors with the same pvalues become accepted.
     #[test]
     fn normal_acceptors_with_pvalues() {
-        let pval1 = PValue::new(1, BALLOT_5_REPLICA1, String::from("command"));
-        let pval2 = PValue::new(2, BALLOT_6_REPLICA2, String::from("command"));
-        let pval3 = PValue::new(3, BALLOT_6_REPLICA2, String::from("command"));
+        let pval1 = PValue::new(1, BALLOT_5_REPLICA1, Command::data("command"));
+        let pval2 = PValue::new(2, BALLOT_6_REPLICA2, Command::data("command"));
+        let pval3 = PValue::new(3, BALLOT_6_REPLICA2, Command::data("command"));
 
         let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
@@ -601,11 +598,11 @@ mod tests {
     // Test that the highest pvalue for the same slot gets retained.
     #[test]
     fn pvalues_for_the_same_slot() {
-        let pval1 = PValue::new(1, BALLOT_5_REPLICA1, String::from("command"));
-        let pval2a = PValue::new(2, BALLOT_6_REPLICA1, String::from("command"));
-        let pval2b = PValue::new(2, BALLOT_6_REPLICA2, String::from("command"));
-        let pval3a = PValue::new(3, BALLOT_6_REPLICA1, String::from("command"));
-        let pval3b = PValue::new(3, BALLOT_6_REPLICA2, String::from("command"));
+        let pval1 = PValue::new(1, BALLOT_5_REPLICA1, Command::data("command"));
+        let pval2a = PValue::new(2, BALLOT_6_REPLICA1, Command::data("command"));
+        let pval2b = PValue::new(2, BALLOT_6_REPLICA2, Command::data("command"));
+        let pval3a = PValue::new(3, BALLOT_6_REPLICA1, Command::data("command"));
+        let pval3b = PValue::new(3, BALLOT_6_REPLICA2, Command::data("command"));
 
         let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
@@ -641,8 +638,8 @@ mod tests {
     // Test that pvalues with same ballot/slot, but different command will be logged.
     #[test]
     fn pvalue_conflicts_are_logged() {
-        let pval1a = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
-        let pval1b = PValue::new(1, BALLOT_6_REPLICA1, String::from("blue fish"));
+        let pval1a = PValue::new(1, BALLOT_6_REPLICA1, Command::data("red fish"));
+        let pval1b = PValue::new(1, BALLOT_6_REPLICA1, Command::data("blue fish"));
 
         let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
@@ -665,8 +662,8 @@ mod tests {
     // conflict happened.
     #[test]
     fn late_acceptors_will_delay() {
-        let pval1a = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
-        let pval1b = PValue::new(1, BALLOT_7_REPLICA1, String::from("blue fish"));
+        let pval1a = PValue::new(1, BALLOT_6_REPLICA1, Command::data("red fish"));
+        let pval1b = PValue::new(1, BALLOT_7_REPLICA1, Command::data("blue fish"));
 
         let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_7_REPLICA1);
         let mut proposer = env.proposer();
@@ -722,7 +719,7 @@ mod tests {
     // Test that the proposer discards values outside the slots it was chosen for.
     #[test]
     fn pvalues_before_configuration_start_are_discarded() {
-        let pval = PValue::new(1, BALLOT_6_REPLICA1, String::from("red fish"));
+        let pval = PValue::new(1, BALLOT_6_REPLICA1, Command::data("red fish"));
         let config = Configuration::bootstrap(GROUP, THREE_REPLICAS, LAST_TWO_REPLICAS);
         let config = config.reconfigure();
         let config = config.commit(128);
@@ -768,9 +765,7 @@ mod tests {
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         for i in 0u64..DEFAULT_ALPHA + 5u64 {
-            proposer.enqueue_command(Command {
-                command: String::from("command"),
-            });
+            proposer.enqueue_command(Command::data("command"));
             if i < DEFAULT_ALPHA {
                 assert_eq!(proposer.proposals.len() as u64, i + 1);
                 assert!(proposer.proposals.contains_key(&(i + 1)));
@@ -796,9 +791,7 @@ mod tests {
         assert!(proposer.commands.len() == 0);
         assert_eq!(proposer.active_slots(), 7u64..(DEFAULT_ALPHA + 7));
 
-        proposer.enqueue_command(Command {
-            command: String::from("command"),
-        });
+        proposer.enqueue_command(Command::data("command"));
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA);
         assert!(proposer.proposals.contains_key(&(DEFAULT_ALPHA + 6)));
         assert!(proposer.commands.len() == 0);
@@ -813,9 +806,7 @@ mod tests {
         let ballot = env.ballot();
 
         for i in 0..7 {
-            proposer.enqueue_command(Command {
-                command: String::from("command"),
-            });
+            proposer.enqueue_command(Command::data("command"));
             assert_eq!(proposer.proposals.len(), 0);
             assert_eq!(proposer.commands.len(), (i + 1) as usize);
         }
@@ -848,17 +839,13 @@ mod tests {
         proposer.stop_at_slot(ITERS + 1);
 
         for i in 0u64..ITERS {
-            proposer.enqueue_command(Command {
-                command: String::from("command"),
-            });
+            proposer.enqueue_command(Command::data("command"));
             assert_eq!(proposer.proposals.len() as u64, i + 1);
             assert_eq!(proposer.commands.len() as u64, 0);
         }
 
         for i in 0u64..ITERS {
-            proposer.enqueue_command(Command {
-                command: String::from("command"),
-            });
+            proposer.enqueue_command(Command::data("command"));
             assert_eq!(proposer.proposals.len() as u64, ITERS);
             assert_eq!(proposer.commands.len() as u64, i + 1);
         }
@@ -877,14 +864,10 @@ mod tests {
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
-        let cmd1 = String::from("command 1");
-        let cmd2 = String::from("command 2");
-        proposer.enqueue_command(Command {
-            command: cmd1.clone(),
-        });
-        proposer.enqueue_command(Command {
-            command: cmd2.clone(),
-        });
+        let cmd1 = Command::data("command 1");
+        let cmd2 = Command::data("command 2");
+        proposer.enqueue_command(cmd1.clone());
+        proposer.enqueue_command(cmd2.clone());
         proposer.make_progress_phase_two(&mut env);
 
         // check that the messages were sent
