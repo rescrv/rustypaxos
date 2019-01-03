@@ -100,18 +100,6 @@ pub enum Message {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AcceptorAction {
-    FollowBallot {
-        ballot: Ballot,
-        start: u64,
-        limit: u64,
-    },
-    AcceptProposal {
-        pval: PValue,
-    },
-}
-
 impl Message {
     pub fn intended_recipient(&self) -> ReplicaID {
         match self {
@@ -125,6 +113,18 @@ impl Message {
             Message::ProposerNACK { ballot } => ballot.leader(),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AcceptorAction {
+    FollowBallot {
+        ballot: Ballot,
+        start: u64,
+        limit: u64,
+    },
+    AcceptProposal {
+        pval: PValue,
+    },
 }
 
 pub struct Paxos {

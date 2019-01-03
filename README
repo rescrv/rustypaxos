@@ -30,6 +30,7 @@ TODO
 
 - simulate misdelivery
 - sort out the replicaID passed to process_*
+- test simulator determinism
 
 Corner Cases:
 - leader failover guarantees same decision decided twice

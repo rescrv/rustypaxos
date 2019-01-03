@@ -18,19 +18,65 @@ use crate::ReplicaID;
 pub enum Transition {
     NOP,
 
-    Introduce(Command), // TODO(rescrv): name better
+    Submit(Command), // TODO(rescrv): name better
 
     StartProposer(Ballot),
 
     DeliverMessage(InFlightMessage),
     DuplicateMessage(InFlightMessage),
     DropMessage(InFlightMessage),
+
+    MakeDurable(ReplicaID, usize),
+}
+
+impl fmt::Display for Transition {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Transition::NOP => write!(f, "NOP"),
+
+            Transition::Submit(c) => write!(f, "submit {:?}", c), // XXX
+
+            Transition::StartProposer(ballot) => write!(f, "start proposer {}", ballot),
+
+            Transition::DeliverMessage(msg) => write!(f, "deliver {}", msg),
+            Transition::DuplicateMessage(msg) => write!(f, "duplicate {}", msg),
+            Transition::DropMessage(msg) => write!(f, "drop {}", msg),
+
+            Transition::MakeDurable(id, thresh) => write!(f, "make durable {} on {}", thresh, id),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InFlightMessage {
     src: ReplicaID,
-    message: Message,
+    msg: Message,
+}
+
+impl fmt::Display for InFlightMessage {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let src = self.src;
+        let dst = self.msg.intended_recipient();
+        match &self.msg {
+            Message::Phase1A {
+                acceptor: _,
+                ballot,
+            } => write!(f, "{}->{} 1A {}", src, dst, ballot),
+            Message::Phase1B {
+                ballot,
+                pvalues,
+            } => write!(f, "{}->{} 1B {} {:?}", src, dst, ballot, pvalues),
+            Message::Phase2A {
+                acceptor: _,
+                pval,
+            } => write!(f, "{}->{} 2A {}", src, dst, pval),
+            Message::Phase2B {
+                ballot,
+                slot,
+            } => write!(f, "{}->{} 2B pvalue:{}:{}:{}", src, dst, slot, ballot.number(), ballot.leader().viewable_id()),
+            Message::ProposerNACK { ballot } => write!(f, "{}->{} NACK {}", src, dst, ballot),
+        }
+    }
 }
 
 pub struct TransitionGenerator {}
@@ -44,13 +90,15 @@ impl TransitionGenerator {
         let mut rng = rand::thread_rng();
         loop {
             let t = match rng.gen_range(0, 20) {
-                3 => self.generate_introduce(),
+                3 => self.generate_submit(),
 
                 5 => self.generate_start_proposer(sim),
 
                 10 => self.generate_deliver_message(sim),
                 11 => self.generate_duplicate_message(sim),
                 12 => self.generate_drop_message(sim),
+
+                15 => self.generate_make_durable(sim),
 
                 _ => Transition::NOP,
             };
@@ -61,17 +109,17 @@ impl TransitionGenerator {
         }
     }
 
-    fn generate_introduce(&mut self) -> Transition {
+    fn generate_submit(&mut self) -> Transition {
         let mut rng = rand::thread_rng();
         let x: u64 = rng.gen();
-        Transition::Introduce(Command::data(&format!("number={}", x)))
+        Transition::Submit(Command::data(&format!("number={}", x)))
     }
 
     fn generate_start_proposer(&mut self, sim: &Simulator) -> Transition {
         let mut rng = rand::thread_rng();
         let mut ballot = Ballot::BOTTOM;
         for replica in sim.replicas.iter() {
-            ballot = max(ballot, replica.highest_ballot());
+            ballot = max(ballot, replica.paxos.highest_ballot());
         }
         // ballot holds the highest ballot in the simulator.
         //
@@ -96,7 +144,7 @@ impl TransitionGenerator {
             }
             _ => {}
         }
-        let leader = self.choose_replica(sim);
+        let leader = self.choose_replica(sim).paxos.id();
         Transition::StartProposer(Ballot::new(number, leader))
     }
 
@@ -121,21 +169,33 @@ impl TransitionGenerator {
         }
     }
 
+    fn generate_make_durable(&mut self, sim: &Simulator) -> Transition {
+        let replica = self.choose_replica(sim);
+        let mut rng = rand::thread_rng();
+        let start = replica.durable + 1;
+        let limit = replica.actions.len();
+        if start < limit {
+            Transition::MakeDurable(replica.paxos.id(), rng.gen_range(start, limit))
+        } else {
+            Transition::NOP
+        }
+    }
+
     fn choose_message<'a>(&mut self, sim: &'a Simulator) -> Option<&'a InFlightMessage> {
         let mut rng = rand::thread_rng();
         sim.messages.choose(&mut rng)
     }
 
-    fn choose_replica(&mut self, sim: &Simulator) -> ReplicaID {
+    fn choose_replica<'a>(&mut self, sim: &'a Simulator) -> &'a Process {
         let mut rng = rand::thread_rng();
         let x: usize = rng.gen();
-        sim.replicas[x % sim.replicas.len()].id()
+        &sim.replicas[x % sim.replicas.len()]
     }
 }
 
 pub struct Simulator {
     commands: Vec<Command>,
-    replicas: Vec<Paxos>,
+    replicas: Vec<Process>,
     messages: Vec<InFlightMessage>,
 }
 
@@ -146,7 +206,7 @@ impl Simulator {
         Simulator {
             commands: Vec::new(),
             // TODO(rescrv): cleanup
-            replicas: vec![Paxos::new_cluster(group, replica)],
+            replicas: vec![Process::new_cluster(group, replica)],
             messages: Vec::new(),
         }
     }
@@ -155,31 +215,33 @@ impl Simulator {
         match trans {
             Transition::NOP => {}
 
-            Transition::Introduce(cmd) => self.apply_introduce(cmd),
+            Transition::Submit(cmd) => self.apply_submit(cmd),
 
             Transition::StartProposer(ballot) => self.apply_start_proposer(ballot),
 
             Transition::DeliverMessage(msg) => self.apply_deliver_message(msg),
             Transition::DuplicateMessage(msg) => self.apply_duplicate_message(msg),
             Transition::DropMessage(msg) => self.apply_drop_message(msg),
+
+            Transition::MakeDurable(id, thresh) => self.apply_make_durable(*id, *thresh),
         }
     }
 
-    fn apply_introduce(&mut self, cmd: &Command) {
+    fn apply_submit(&mut self, cmd: &Command) {
         self.commands.push(cmd.clone());
     }
 
     fn apply_start_proposer(&mut self, ballot: &Ballot) {
         let replica = self.get_replica(ballot.leader());
-        let mut env = SimulatorEnvironment::new(replica.id());
-        replica.start_proposer(&mut env, ballot);
+        let mut env = SimulatorEnvironment::new(replica.paxos.id());
+        replica.paxos.start_proposer(&mut env, ballot);
         self.merge(env);
     }
 
     fn apply_deliver_message(&mut self, msg: &InFlightMessage) {
-        let replica = self.get_replica(msg.message.intended_recipient());
-        let mut env = SimulatorEnvironment::new(replica.id());
-        replica.process_message(&mut env, msg.src, &msg.message);
+        let replica = self.get_replica(msg.msg.intended_recipient());
+        let mut env = SimulatorEnvironment::new(replica.paxos.id());
+        replica.paxos.process_message(&mut env, msg.src, &msg.msg);
         self.remove_message(msg);
         self.merge(env);
     }
@@ -192,9 +254,25 @@ impl Simulator {
         self.remove_message(msg);
     }
 
-    fn get_replica(&mut self, id: ReplicaID) -> &mut Paxos {
+    fn apply_make_durable(&mut self, rid: ReplicaID, thresh: usize) {
+        let replica = self.get_replica(rid);
+        let mut still_not_durable = Vec::new();
+        let mut now_in_flight = Vec::new();
+        for (when, msg) in replica.when_persistent.iter() {
+            if *when <= thresh {
+                now_in_flight.push(msg.clone());
+            } else {
+                still_not_durable.push((*when, msg.clone()));
+            }
+        }
+        replica.durable = thresh;
+        replica.when_persistent = still_not_durable;
+        self.messages.append(&mut now_in_flight);
+    }
+
+    fn get_replica(&mut self, id: ReplicaID) -> &mut Process {
         for replica in self.replicas.iter_mut() {
-            if replica.id() == id {
+            if replica.paxos.id() == id {
                 return replica;
             }
         }
@@ -213,17 +291,40 @@ impl Simulator {
 
     fn merge(&mut self, mut env: SimulatorEnvironment) {
         self.messages.append(&mut env.messages);
+        let replica = self.get_replica(env.id);
+        replica.actions.append(&mut env.actions);
+        // actions must be modified before when_persistent
+        for action in env.when_persistent {
+            replica
+                .when_persistent
+                .push((replica.actions.len(), action));
+        }
     }
 }
 
-pub fn equivalent(sim1: &Simulator, sim2: &Simulator) -> bool {
-    // TODO(rescrv): obviously not true, but not a priority
-    true
+struct Process {
+    paxos: Paxos,
+    actions: Vec<AcceptorAction>,
+    durable: usize,
+    when_persistent: Vec<(usize, InFlightMessage)>,
+}
+
+impl Process {
+    fn new_cluster(group: GroupID, replica: ReplicaID) -> Process {
+        Process {
+            paxos: Paxos::new_cluster(group, replica),
+            actions: Vec::new(),
+            durable: 0,
+            when_persistent: Vec::new(),
+        }
+    }
 }
 
 struct SimulatorEnvironment {
     id: ReplicaID,
     messages: Vec<InFlightMessage>,
+    actions: Vec<AcceptorAction>,
+    when_persistent: Vec<InFlightMessage>,
 }
 
 impl SimulatorEnvironment {
@@ -231,26 +332,28 @@ impl SimulatorEnvironment {
         SimulatorEnvironment {
             id,
             messages: Vec::new(),
+            actions: Vec::new(),
+            when_persistent: Vec::new(),
         }
     }
 }
 
 impl Environment for SimulatorEnvironment {
-    fn send(&mut self, message: Message) {
-        self.messages.push(InFlightMessage {
-            src: self.id,
-            message,
-        });
+    fn send(&mut self, msg: Message) {
+        self.messages.push(InFlightMessage { src: self.id, msg });
     }
 
     fn persist_acceptor(&mut self, action: AcceptorAction) {
-        // TODO(rescrv);
+        self.actions.push(action);
     }
 
     fn send_when_persistent(&mut self, msg: Message) {
-        // TODO(rescrv)
+        self.when_persistent
+            .push(InFlightMessage { src: self.id, msg });
     }
 
-    // TODO(rescrv): make sure this shows up
-    fn report_misbehavior(&mut self, _m: Misbehavior) {}
+    // TODO(rescrv): be more advanced here
+    fn report_misbehavior(&mut self, m: Misbehavior) {
+        panic!("Oh No! {:?}\n", m);
+    }
 }
