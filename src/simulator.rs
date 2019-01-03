@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::fmt;
 
 use rand;
 use rand::seq::SliceRandom;
@@ -18,7 +19,8 @@ use crate::ReplicaID;
 pub enum Transition {
     NOP,
 
-    Submit(Command), // TODO(rescrv): name better
+    NewCommand(Command), // TODO(rescrv): name better
+    SubmitCommand(Command, ReplicaID),
 
     StartProposer(Ballot),
 
@@ -34,7 +36,8 @@ impl fmt::Display for Transition {
         match self {
             Transition::NOP => write!(f, "NOP"),
 
-            Transition::Submit(c) => write!(f, "submit {:?}", c), // XXX
+            Transition::NewCommand(c) => write!(f, "new command {:?}", c), // XXX
+            Transition::SubmitCommand(c, id) => write!(f, "submit {:?}->{}", c, id), // XXX
 
             Transition::StartProposer(ballot) => write!(f, "start proposer {}", ballot),
 
@@ -89,8 +92,9 @@ impl TransitionGenerator {
     pub fn next(&mut self, sim: &Simulator) -> Transition {
         let mut rng = rand::thread_rng();
         loop {
-            let t = match rng.gen_range(0, 20) {
-                3 => self.generate_submit(),
+            let t = match rng.gen_range(0, 37) {
+                3 => self.generate_new_command(),
+                4 => self.generate_submit_command(sim),
 
                 5 => self.generate_start_proposer(sim),
 
@@ -99,6 +103,41 @@ impl TransitionGenerator {
                 12 => self.generate_drop_message(sim),
 
                 15 => self.generate_make_durable(sim),
+
+                16 => self.generate_deliver_message(sim),
+                17 => self.generate_deliver_message(sim),
+                18 => self.generate_deliver_message(sim),
+                19 => self.generate_deliver_message(sim),
+                20 => self.generate_deliver_message(sim),
+                21 => self.generate_deliver_message(sim),
+                22 => self.generate_deliver_message(sim),
+                23 => self.generate_deliver_message(sim),
+                24 => self.generate_deliver_message(sim),
+                25 => self.generate_deliver_message(sim),
+                26 => self.generate_deliver_message(sim),
+                27 => self.generate_deliver_message(sim),
+                28 => self.generate_deliver_message(sim),
+                29 => self.generate_deliver_message(sim),
+                30 => self.generate_deliver_message(sim),
+                31 => self.generate_deliver_message(sim),
+                32 => self.generate_deliver_message(sim),
+                33 => self.generate_deliver_message(sim),
+                34 => self.generate_deliver_message(sim),
+                35 => self.generate_deliver_message(sim),
+                36 => self.generate_deliver_message(sim),
+
+                37 => self.generate_make_durable(sim),
+                38 => self.generate_make_durable(sim),
+                39 => self.generate_make_durable(sim),
+                40 => self.generate_make_durable(sim),
+                41 => self.generate_make_durable(sim),
+                42 => self.generate_make_durable(sim),
+                43 => self.generate_make_durable(sim),
+                44 => self.generate_make_durable(sim),
+                45 => self.generate_make_durable(sim),
+                46 => self.generate_make_durable(sim),
+                47 => self.generate_make_durable(sim),
+
 
                 _ => Transition::NOP,
             };
@@ -109,10 +148,19 @@ impl TransitionGenerator {
         }
     }
 
-    fn generate_submit(&mut self) -> Transition {
+    fn generate_new_command(&mut self) -> Transition {
         let mut rng = rand::thread_rng();
         let x: u64 = rng.gen();
-        Transition::Submit(Command::data(&format!("number={}", x)))
+        Transition::NewCommand(Command::data(&format!("number={}", x)))
+    }
+
+    fn generate_submit_command(&mut self, sim: &Simulator) -> Transition {
+        let mut rng = rand::thread_rng();
+        let id = self.choose_replica(sim).paxos.id();
+        match sim.commands.choose(&mut rng) {
+            Some(c) => Transition::SubmitCommand(c.clone(), id),
+            None => Transition::NOP,
+        }
     }
 
     fn generate_start_proposer(&mut self, sim: &Simulator) -> Transition {
@@ -215,7 +263,8 @@ impl Simulator {
         match trans {
             Transition::NOP => {}
 
-            Transition::Submit(cmd) => self.apply_submit(cmd),
+            Transition::NewCommand(cmd) => self.apply_new_command(cmd),
+            Transition::SubmitCommand(cmd, id) => self.apply_submit_command(cmd, id),
 
             Transition::StartProposer(ballot) => self.apply_start_proposer(ballot),
 
@@ -227,8 +276,15 @@ impl Simulator {
         }
     }
 
-    fn apply_submit(&mut self, cmd: &Command) {
+    fn apply_new_command(&mut self, cmd: &Command) {
         self.commands.push(cmd.clone());
+    }
+
+    fn apply_submit_command(&mut self, cmd: &Command, id: &ReplicaID) {
+        let replica = self.get_replica(*id);
+        let mut env = SimulatorEnvironment::new(replica.paxos.id());
+        replica.paxos.enqueue_command(&mut env, cmd.clone());
+        self.merge(env);
     }
 
     fn apply_start_proposer(&mut self, ballot: &Ballot) {

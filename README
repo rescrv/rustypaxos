@@ -25,6 +25,7 @@ TODO
 - restart
 - add node
 - lots of copying that probably doesn't have to happen
+- tests for late arriving acceptors
 
 - doc optimization about replica quorum
 

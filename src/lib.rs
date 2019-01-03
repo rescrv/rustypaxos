@@ -14,6 +14,7 @@ use std::rc;
 use crate::configuration::GroupID;
 use crate::configuration::ReplicaID;
 use crate::types::Ballot;
+use crate::types::Command;
 use crate::types::PValue;
 
 pub mod acceptor;
@@ -75,6 +76,7 @@ pub enum Misbehavior {
     ProposerWrongBallot(ReplicaID, Ballot),
     ProposerDoesNotMatchLeader(ReplicaID, Ballot),
     WrongRecipient(ReplicaID, ReplicaID, ReplicaID),
+    Phase2First(ReplicaID, Ballot),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,6 +176,12 @@ impl Paxos {
             let mut proposer = proposer::Proposer::new(&config, *ballot);
             proposer.make_progress(env);
             entry.insert(proposer);
+        }
+    }
+
+    pub fn enqueue_command(&mut self, env: &mut Environment, cmd: Command) {
+        if let Entry::Occupied(mut entry) = self.proposers.entry(self.highest_ballot()) {
+            entry.get_mut().enqueue_command(env, cmd);
         }
     }
 

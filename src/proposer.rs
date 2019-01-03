@@ -51,11 +51,12 @@ impl Proposer {
     }
 
     // Add a command to be proposed.
-    pub fn enqueue_command(&mut self, cmd: Command) {
+    // TODO(rescrv) this should take env and send for each newly bound command
+    pub fn enqueue_command(&mut self, env: &mut Environment, cmd: Command) {
         // Enqueue the command and then shift commands to the proposals.
         self.commands.push_back(cmd);
         if self.phase == PaxosPhase::TWO && (self.proposals.len() as u64) < self.config.alpha() {
-            self.bind_commands_to_slots();
+            self.bind_commands_to_slots(env);
         }
     }
 
@@ -72,13 +73,13 @@ impl Proposer {
     }
 
     // Advance the window of contiguously learned commands to at least slot.
-    pub fn advance_window(&mut self, slot: u64) {
+    pub fn advance_window(&mut self, env: &mut Environment, slot: u64) {
         assert!(self.lower_slot < slot);
         while self.lower_slot < slot && self.lower_slot < self.upper_slot {
             self.proposals.remove(&self.lower_slot);
             self.lower_slot += 1;
         }
-        self.bind_commands_to_slots();
+        self.bind_commands_to_slots(env);
     }
 
     // Slots for which this proposer will currently generate pvalues
@@ -197,8 +198,7 @@ impl Proposer {
             // maybe advance to phase two
             if self.followers.has_quorum() {
                 self.phase = PaxosPhase::TWO;
-                self.bind_commands_to_slots();
-                self.make_progress_phase_two(env);
+                self.bind_commands_to_slots(env);
             }
         }
     }
@@ -232,8 +232,12 @@ impl Proposer {
             env.report_misbehavior(Misbehavior::NotInPhase2(*acceptor, self.ballot));
             return;
         }
-        // XXX check they follow phase1 quorum
-
+        // If they didn't follow phase one, they have no business responding in phase two.
+        if !self.followers.is_follower(acceptor) {
+            // TODO(rescrv): write a test for this
+            env.report_misbehavior(Misbehavior::Phase2First(*acceptor, *ballot));
+            return;
+        }
         // Get the pvalue state.
         let pval_state = match self.proposals.get_mut(&slot) {
             Some(x) => x,
@@ -266,16 +270,11 @@ impl Proposer {
                 Some(v) => v,
                 None => continue,
             };
-            for replica in pval_state.quorum.waiting_for() {
-                env.send(Message::Phase2A {
-                    acceptor: replica,
-                    pval: pval_state.pval.clone(),
-                });
-            }
+            pval_state.make_progress(env);
         }
     }
 
-    fn bind_commands_to_slots(&mut self) {
+    fn bind_commands_to_slots(&mut self, env: &mut Environment) {
         // TODO(rescrv):  I know this is inefficient, but it is safe and clean.  Make it all three.
         // The risk of being tricky here is that there's a hole in the pvalues from phase one, and
         // that hole leads to slots not being filled and the window not moving forward.
@@ -286,10 +285,12 @@ impl Proposer {
                     Some(cmd) => cmd,
                     None => return,
                 };
-                entry.insert(PValueState::wrap(
+                let mut pval_state = PValueState::wrap(
                     self.config.clone(),
                     PValue::new(slot, self.ballot, command),
-                ));
+                );
+                pval_state.make_progress(env);
+                entry.insert(pval_state);
             }
         }
     }
@@ -325,6 +326,15 @@ impl PValueState {
         PValueState {
             pval,
             quorum: QuorumTracker::new(config),
+        }
+    }
+
+    fn make_progress(&mut self, env: &mut Environment) {
+        for replica in self.quorum.waiting_for() {
+            env.send(Message::Phase2A {
+                acceptor: replica,
+                pval: self.pval.clone(),
+            });
         }
     }
 }
@@ -753,10 +763,10 @@ mod tests {
     #[test]
     #[should_panic]
     fn advance_window_monotonic() {
-        let env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
-        proposer.advance_window(5);
-        proposer.advance_window(4);
+        proposer.advance_window(&mut env, 5);
+        proposer.advance_window(&mut env, 4);
     }
 
     // Test that stop_at_slot panics if it increases.
@@ -783,7 +793,7 @@ mod tests {
         assert_eq!(proposer.phase, PaxosPhase::TWO);
 
         for i in 0u64..DEFAULT_ALPHA + 5u64 {
-            proposer.enqueue_command(Command::data("command"));
+            proposer.enqueue_command(&mut env, Command::data("command"));
             if i < DEFAULT_ALPHA {
                 assert_eq!(proposer.proposals.len() as u64, i + 1);
                 assert!(proposer.proposals.contains_key(&(i + 1)));
@@ -796,20 +806,20 @@ mod tests {
             assert_eq!(proposer.active_slots(), 1u64..(DEFAULT_ALPHA + 1));
         }
 
-        proposer.advance_window(2);
+        proposer.advance_window(&mut env, 2);
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA);
         assert!(!proposer.proposals.contains_key(&1));
         assert!(proposer.proposals.contains_key(&(DEFAULT_ALPHA + 1)));
         assert!(!proposer.proposals.contains_key(&(DEFAULT_ALPHA + 2)));
         assert_eq!(proposer.active_slots(), 2u64..(DEFAULT_ALPHA + 2));
 
-        proposer.advance_window(7);
+        proposer.advance_window(&mut env, 7);
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA - 1);
         assert!(!proposer.proposals.contains_key(&6));
         assert!(proposer.commands.len() == 0);
         assert_eq!(proposer.active_slots(), 7u64..(DEFAULT_ALPHA + 7));
 
-        proposer.enqueue_command(Command::data("command"));
+        proposer.enqueue_command(&mut env, Command::data("command"));
         assert_eq!(proposer.proposals.len() as u64, DEFAULT_ALPHA);
         assert!(proposer.proposals.contains_key(&(DEFAULT_ALPHA + 6)));
         assert!(proposer.commands.len() == 0);
@@ -824,7 +834,7 @@ mod tests {
         let ballot = env.ballot();
 
         for i in 0..7 {
-            proposer.enqueue_command(Command::data("command"));
+            proposer.enqueue_command(&mut env, Command::data("command"));
             assert_eq!(proposer.proposals.len(), 0);
             assert_eq!(proposer.commands.len(), (i + 1) as usize);
         }
@@ -857,36 +867,35 @@ mod tests {
         proposer.stop_at_slot(ITERS + 1);
 
         for i in 0u64..ITERS {
-            proposer.enqueue_command(Command::data("command"));
+            proposer.enqueue_command(&mut env, Command::data("command"));
             assert_eq!(proposer.proposals.len() as u64, i + 1);
             assert_eq!(proposer.commands.len() as u64, 0);
         }
 
         for i in 0u64..ITERS {
-            proposer.enqueue_command(Command::data("command"));
+            proposer.enqueue_command(&mut env, Command::data("command"));
             assert_eq!(proposer.proposals.len() as u64, ITERS);
             assert_eq!(proposer.commands.len() as u64, i + 1);
         }
     }
 
-    // Test that phase two sends messages with pvalues.
+    // Test that transition to phase two sends messages with pvalues.
     #[test]
-    fn make_progress_sends_phase_two() {
+    fn phase_two_sends_previous_enqueues() {
         let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
         let ballot = env.ballot();
+
+        let cmd1 = Command::data("command 1");
+        let cmd2 = Command::data("command 2");
+        proposer.enqueue_command(&mut env, cmd1.clone());
+        proposer.enqueue_command(&mut env, cmd2.clone());
 
         proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
         proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
         proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
         env.assert_ok();
         assert_eq!(proposer.phase, PaxosPhase::TWO);
-
-        let cmd1 = Command::data("command 1");
-        let cmd2 = Command::data("command 2");
-        proposer.enqueue_command(cmd1.clone());
-        proposer.enqueue_command(cmd2.clone());
-        proposer.make_progress_phase_two(&mut env);
 
         // check that the messages were sent
         env.assert_phase_2a_messages(&[
@@ -913,7 +922,67 @@ mod tests {
         ]);
     }
 
+
+    // Test that enqueues after phase two immediately send phase 2a messages.
+    #[test]
+    fn enqueue_after_phase_two_sends_immediately() {
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut proposer = env.proposer();
+        let ballot = env.ballot();
+
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
+        env.assert_ok();
+        assert_eq!(proposer.phase, PaxosPhase::TWO);
+        env.assert_phase_2a_messages(&[]);
+
+        let cmd1 = Command::data("command 1");
+        let cmd2 = Command::data("command 2");
+        proposer.enqueue_command(&mut env, cmd1.clone());
+        proposer.enqueue_command(&mut env, cmd2.clone());
+
+        // check that the messages were sent
+        env.assert_phase_2a_messages(&[
+            (REPLICA1, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA1, PValue::new(2, ballot, cmd2.clone())),
+            (REPLICA2, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA2, PValue::new(2, ballot, cmd2.clone())),
+            (REPLICA3, PValue::new(1, ballot, cmd1.clone())),
+            (REPLICA3, PValue::new(2, ballot, cmd2.clone())),
+        ]);
+    }
+
+    // Test that pvalues returned in phase one go out in phase two with the proposer's ballot.
+    #[test]
+    #[ignore] // TODO(rescrv): XXX
+    fn all_proposals_come_from_us() {
+        let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
+        let mut proposer = env.proposer();
+        let ballot = env.ballot();
+
+        // Note: ballot.number=4
+        let pval = PValue::new(1, BALLOT_4_REPLICA1, Command::data("red fish"));
+
+        proposer.process_phase_1b_message(&mut env, &REPLICA1, &ballot, &[pval]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA2, &ballot, &[]);
+        proposer.process_phase_1b_message(&mut env, &REPLICA3, &ballot, &[]);
+        env.assert_ok();
+        assert_eq!(proposer.phase, PaxosPhase::TWO);
+
+        // Note: ballot.number=5
+        let pval = PValue::new(1, BALLOT_5_REPLICA1, Command::data("red fish"));
+
+        // check that the messages were sent
+        env.assert_phase_2a_messages(&[
+            (REPLICA1, pval.clone()),
+            (REPLICA2, pval.clone()),
+            (REPLICA3, pval.clone()),
+        ]);
+    }
+
     // TODO:
     // - check all the cases of process_phase_two
     // - check that when there are existing pvalues our phase two sends them out as our own
+    // - check that phase two does not message a server that didn't follow phase one
 }
