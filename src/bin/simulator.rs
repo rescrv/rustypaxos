@@ -6,7 +6,7 @@ use rustypaxos::simulator::TransitionGenerator;
 fn main() {
     let mut gen = TransitionGenerator::new();
     let mut sim = Simulator::new();
-    for _i in 0..100000 {
+    for _i in 0..10000 {
         let trans = gen.next(&sim);
         print!("{}\n", trans);
         sim.apply(&trans);

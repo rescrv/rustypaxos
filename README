@@ -26,6 +26,7 @@ TODO
 - add node
 - lots of copying that probably doesn't have to happen
 - tests for late arriving acceptors
+- when a pvalue gets overwritten on phase1 add to enqueued
 
 - doc optimization about replica quorum
 

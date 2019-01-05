@@ -80,6 +80,19 @@ impl PValue {
         }
     }
 
+    /// Create a new PValue from existing PValue, but override the ballot.
+    ///
+    /// # Panics
+    ///
+    /// - The new ballot must not be less than self.ballot()
+    pub fn for_new_ballot(&self, ballot: Ballot) -> PValue {
+        PValue {
+            ballot,
+            slot: self.slot,
+            command: self.command.clone(),
+        }
+    }
+
     /// The slot for which this pvalue proposes a value.
     pub fn slot(&self) -> u64 {
         self.slot

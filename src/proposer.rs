@@ -51,7 +51,6 @@ impl Proposer {
     }
 
     // Add a command to be proposed.
-    // TODO(rescrv) this should take env and send for each newly bound command
     pub fn enqueue_command(&mut self, env: &mut Environment, cmd: Command) {
         // Enqueue the command and then shift commands to the proposals.
         self.commands.push_back(cmd);
@@ -64,7 +63,8 @@ impl Proposer {
     //
     // # Panics
     //
-    // * This value is initialized to u64 and must not increase.
+    // * This value is initialized to u64 max may only decrease.  Passing a value greater than the
+    //   previous value will panic.
     pub fn stop_at_slot(&mut self, slot: u64) {
         // TODO(rescrv): In practice, we should never have a caller move this to a slot that's
         // been assigned a pvalue under this ballot.  It would be good to enforce that.
@@ -198,6 +198,7 @@ impl Proposer {
             // maybe advance to phase two
             if self.followers.has_quorum() {
                 self.phase = PaxosPhase::TWO;
+                self.make_progress_phase_two(env);
                 self.bind_commands_to_slots(env);
             }
         }
@@ -259,10 +260,13 @@ impl Proposer {
         if pval_state.quorum.has_quorum() {
             // SUCCESS!
             // TODO(rescrv): do something here
+            print!("LEARNED {:?}\n", pval_state.pval);
         }
     }
 
     // Take actions that will make progress for phase two of this ballot.
+    //
+    // This will retransmit every bound pvalue, but will not bind additional pvalues.
     fn make_progress_phase_two(&mut self, env: &mut Environment) {
         assert!(self.phase == PaxosPhase::TWO);
         for slot in self.active_slots() {
@@ -270,7 +274,7 @@ impl Proposer {
                 Some(v) => v,
                 None => continue,
             };
-            pval_state.make_progress(env);
+            pval_state.make_progress(env, &self.ballot);
         }
     }
 
@@ -289,7 +293,7 @@ impl Proposer {
                     self.config.clone(),
                     PValue::new(slot, self.ballot, command),
                 );
-                pval_state.make_progress(env);
+                pval_state.make_progress(env, &self.ballot);
                 entry.insert(pval_state);
             }
         }
@@ -329,11 +333,12 @@ impl PValueState {
         }
     }
 
-    fn make_progress(&mut self, env: &mut Environment) {
+    fn make_progress(&mut self, env: &mut Environment, ballot: &Ballot) {
         for replica in self.quorum.waiting_for() {
+            let pval = self.pval.for_new_ballot(*ballot);
             env.send(Message::Phase2A {
                 acceptor: replica,
-                pval: self.pval.clone(),
+                pval,
             });
         }
     }
@@ -955,7 +960,6 @@ mod tests {
 
     // Test that pvalues returned in phase one go out in phase two with the proposer's ballot.
     #[test]
-    #[ignore] // TODO(rescrv): XXX
     fn all_proposals_come_from_us() {
         let mut env = TestEnvironment::new(GROUP, THREE_REPLICAS, &[], BALLOT_5_REPLICA1);
         let mut proposer = env.proposer();
@@ -985,4 +989,10 @@ mod tests {
     // - check all the cases of process_phase_two
     // - check that when there are existing pvalues our phase two sends them out as our own
     // - check that phase two does not message a server that didn't follow phase one
+    // - test someone not an acceptor phase two
+    // - test wrong ballot phase two
+    // - test phase two in phase one
+    // - test phase two when didn't follow phase one
+    // - artificially lose pvalue state and then see reported misbehavior
+    // - double phase two follower
 }
