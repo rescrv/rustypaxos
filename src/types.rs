@@ -178,6 +178,13 @@ mod tests {
     use super::testutil::*;
     use super::*;
 
+    // Test the ballot basics
+    #[test]
+    fn ballot_getters() {
+        assert_eq!(BALLOT_5_REPLICA1.number(), 5);
+        assert_eq!(BALLOT_5_REPLICA1.leader(), REPLICA1);
+    }
+
     // Test that the Ballot string looks like what we expect.
     #[test]
     fn ballot_string() {
@@ -190,9 +197,20 @@ mod tests {
     // Test that ballots are ordered first by their number and then by their leader.
     #[test]
     fn ballot_order() {
+        assert!(Ballot::BOTTOM < BALLOT_5_REPLICA1);
         assert!(BALLOT_5_REPLICA1 < BALLOT_6_REPLICA1);
         assert!(BALLOT_6_REPLICA1 < BALLOT_6_REPLICA2);
         assert!(BALLOT_6_REPLICA2 < BALLOT_7_REPLICA1);
+        assert!(BALLOT_7_REPLICA1 < Ballot::TOP);
+    }
+
+    // Test the PValue basics
+    #[test]
+    fn pvalue_basics() {
+        let pval = PValue::new(32, BALLOT_5_REPLICA1, Command::data("command"));
+        assert_eq!(pval.slot(), 32);
+        assert_eq!(pval.ballot(), BALLOT_5_REPLICA1);
+        assert_eq!(pval.command(), &Command::data("command"));
     }
 
     // Test that the PValue string looks like what we expect.
