@@ -82,70 +82,15 @@ impl fmt::Display for InFlightMessage {
     }
 }
 
-pub struct TransitionGenerator {}
+trait TransitionGenerator {
+    fn next(&mut self, sim: &Simulator) -> Transition;
+}
 
-impl TransitionGenerator {
-    pub fn new() -> TransitionGenerator {
-        TransitionGenerator {}
-    }
+pub struct RealtimeTransitionGenerator {}
 
-    pub fn next(&mut self, sim: &Simulator) -> Transition {
-        let mut rng = rand::thread_rng();
-        loop {
-            let t = match rng.gen_range(0, 37) {
-                3 => self.generate_new_command(),
-                4 => self.generate_submit_command(sim),
-
-                5 => self.generate_start_proposer(sim),
-
-                10 => self.generate_deliver_message(sim),
-                11 => self.generate_duplicate_message(sim),
-                12 => self.generate_drop_message(sim),
-
-                15 => self.generate_make_durable(sim),
-
-                16 => self.generate_deliver_message(sim),
-                17 => self.generate_deliver_message(sim),
-                18 => self.generate_deliver_message(sim),
-                19 => self.generate_deliver_message(sim),
-                20 => self.generate_deliver_message(sim),
-                21 => self.generate_deliver_message(sim),
-                22 => self.generate_deliver_message(sim),
-                23 => self.generate_deliver_message(sim),
-                24 => self.generate_deliver_message(sim),
-                25 => self.generate_deliver_message(sim),
-                26 => self.generate_deliver_message(sim),
-                27 => self.generate_deliver_message(sim),
-                28 => self.generate_deliver_message(sim),
-                29 => self.generate_deliver_message(sim),
-                30 => self.generate_deliver_message(sim),
-                31 => self.generate_deliver_message(sim),
-                32 => self.generate_deliver_message(sim),
-                33 => self.generate_deliver_message(sim),
-                34 => self.generate_deliver_message(sim),
-                35 => self.generate_deliver_message(sim),
-                36 => self.generate_deliver_message(sim),
-
-                37 => self.generate_make_durable(sim),
-                38 => self.generate_make_durable(sim),
-                39 => self.generate_make_durable(sim),
-                40 => self.generate_make_durable(sim),
-                41 => self.generate_make_durable(sim),
-                42 => self.generate_make_durable(sim),
-                43 => self.generate_make_durable(sim),
-                44 => self.generate_make_durable(sim),
-                45 => self.generate_make_durable(sim),
-                46 => self.generate_make_durable(sim),
-                47 => self.generate_make_durable(sim),
-
-
-                _ => Transition::NOP,
-            };
-            if t == Transition::NOP {
-                continue;
-            }
-            return t;
-        }
+impl RealtimeTransitionGenerator {
+    pub fn new() -> RealtimeTransitionGenerator {
+        RealtimeTransitionGenerator {}
     }
 
     fn generate_new_command(&mut self) -> Transition {
@@ -238,6 +183,67 @@ impl TransitionGenerator {
         let mut rng = rand::thread_rng();
         let x: usize = rng.gen();
         &sim.replicas[x % sim.replicas.len()]
+    }
+}
+
+impl TransitionGenerator for RealtimeTransitionGenerator {
+    fn next(&mut self, sim: &Simulator) -> Transition {
+        let mut rng = rand::thread_rng();
+        loop {
+            let t = match rng.gen_range(0, 37) {
+                3 => self.generate_new_command(),
+                4 => self.generate_submit_command(sim),
+
+                5 => self.generate_start_proposer(sim),
+
+                10 => self.generate_deliver_message(sim),
+                11 => self.generate_duplicate_message(sim),
+                12 => self.generate_drop_message(sim),
+
+                15 => self.generate_make_durable(sim),
+
+                16 => self.generate_deliver_message(sim),
+                17 => self.generate_deliver_message(sim),
+                18 => self.generate_deliver_message(sim),
+                19 => self.generate_deliver_message(sim),
+                20 => self.generate_deliver_message(sim),
+                21 => self.generate_deliver_message(sim),
+                22 => self.generate_deliver_message(sim),
+                23 => self.generate_deliver_message(sim),
+                24 => self.generate_deliver_message(sim),
+                25 => self.generate_deliver_message(sim),
+                26 => self.generate_deliver_message(sim),
+                27 => self.generate_deliver_message(sim),
+                28 => self.generate_deliver_message(sim),
+                29 => self.generate_deliver_message(sim),
+                30 => self.generate_deliver_message(sim),
+                31 => self.generate_deliver_message(sim),
+                32 => self.generate_deliver_message(sim),
+                33 => self.generate_deliver_message(sim),
+                34 => self.generate_deliver_message(sim),
+                35 => self.generate_deliver_message(sim),
+                36 => self.generate_deliver_message(sim),
+
+                37 => self.generate_make_durable(sim),
+                38 => self.generate_make_durable(sim),
+                39 => self.generate_make_durable(sim),
+                40 => self.generate_make_durable(sim),
+                41 => self.generate_make_durable(sim),
+                42 => self.generate_make_durable(sim),
+                43 => self.generate_make_durable(sim),
+                44 => self.generate_make_durable(sim),
+                45 => self.generate_make_durable(sim),
+                46 => self.generate_make_durable(sim),
+                47 => self.generate_make_durable(sim),
+
+
+                _ => Transition::NOP,
+            };
+            if t == Transition::NOP {
+                continue;
+            }
+            return t;
+        }
     }
 }
 
@@ -412,4 +418,15 @@ impl Environment for SimulatorEnvironment {
     fn report_misbehavior(&mut self, m: Misbehavior) {
         panic!("Oh No! {:?}\n", m);
     }
+}
+
+pub fn run() {
+    let mut gen = RealtimeTransitionGenerator::new();
+    let mut sim = Simulator::new();
+    for _i in 0..10 {
+        let trans = gen.next(&sim);
+        print!("{}\n", trans);
+        sim.apply(&trans);
+    }
+    ::std::process::exit(0);
 }

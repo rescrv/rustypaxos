@@ -1,3 +1,7 @@
+Paxos in Rust
+=============
+
+
 Error Handling
 ==============
 
@@ -45,4 +49,4 @@ Insights
 ========
 // This protocol is often compared to two-phase commit, but such a comparison
 // is slightly flawed.  In two phase commit, a node promises and locks the
-promise.   In paxos it does not lock and can abandon.  Blah de blah
+// promise.   In paxos it does not lock and can abandon.  Blah de blah
